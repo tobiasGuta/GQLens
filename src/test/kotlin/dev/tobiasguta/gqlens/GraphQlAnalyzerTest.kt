@@ -6,7 +6,7 @@ import kotlin.test.assertTrue
 
 class GraphQlAnalyzerTest {
     @Test fun `extracts operation and nested fields without aliases`() {
-        val doc = """query GetUser(${': ID!) { someone: user(id: $id) { id profile { email } } }"""
+        val doc = """query GetUser(${'$'}id: ID!) { someone: user(id: ${'$'}id) { id profile { email } } }"""
         val result = GraphQlAnalyzer.analyze(doc).single()
         assertEquals("QUERY", result.kind)
         assertEquals("GetUser", result.name)
