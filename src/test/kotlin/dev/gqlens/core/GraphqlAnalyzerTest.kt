@@ -9,8 +9,8 @@ class GraphqlAnalyzerTest {
     @Test
     fun parsesNestedOperationsAndFragmentsWithoutStoringValues() {
         val query = """
-            query CurrentUser(\$id: ID!) {
-              viewer: user(id: \$id) { ...Basic }
+            query CurrentUser {
+              viewer: user(id: "abc") { ...Basic }
             }
             fragment Basic on User { id profile { email } }
         """.trimIndent()
