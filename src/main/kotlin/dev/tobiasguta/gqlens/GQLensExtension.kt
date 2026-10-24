@@ -24,7 +24,7 @@ class GQLensExtension : BurpExtension {
                     if (captureEnabled.get() && request.isInScope()
                         && (request.method() == "GET" || request.method() == "POST")) {
                         // Do not copy unusually large bodies into a String.
-                        if (request.body().length <= 256 * 1024) {
+                        if (request.body().length() <= 256 * 1024) {
                             val endpoint = OperationInventory.safeEndpoint(request.url())
                             if (endpoint != null) {
                                 val documents = GraphQlTransport.extract(
