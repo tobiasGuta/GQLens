@@ -12,15 +12,14 @@
 - Exports structural metadata as JSON. Holds data in memory, not in project storage.
 - No active enumeration, scanner integration, background connections, request modification, or Pro-only APIs.
 
-## Install via GitHub (recommended)
+## Download and install
 
-1. Open the **Actions** tab of this repository.
-2. Open the latest successful **Build GQLens JAR** run on main.
-3. Download the **GQLens-v0.1.0-burp-community** artifact ZIP and extract the JAR inside.
-4. In Burp Suite Community Edition: **Extensions > Installed > Add > Java > Select file**, and select **GQLens-0.1.0.jar**.
-5. Find the **GQLens** tab. Set Burp's Target scope for your authorized program and browse/test requests in Burp as normal.
+1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
+2. Under **v0.1.0**, download the attached **GQLens-0.1.0.jar** directly from **Assets** (not the automatically generated source archives).
+3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
+4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
-Actions artifacts are retained for 30 days; new builds on main refresh the artifact. You need access to GitHub Actions artifacts to download them.
+Releases are intended as the stable, persistent download location. For development builds, GitHub Actions also provides short-lived build artifacts.
 
 ## Build locally
 
