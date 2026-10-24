@@ -134,15 +134,17 @@ object GraphqlAnalyzer {
         }
     }
 
-    private fun endpointWithoutSecrets(rawUrl: String): String? = try {
+    private fun endpointWithoutSecrets(rawUrl: String): String? {
+        return try {
         val uri = URI(rawUrl)
         val scheme = uri.scheme?.lowercase() ?: return null
         if (scheme != "https" && scheme != "http") return null
         val host = uri.host?.lowercase() ?: return null
         val authority = if (uri.port >= 0) host + ":" + uri.port else host
         scheme + "://" + authority + (uri.rawPath?.ifEmpty { "/" } ?: "/")
-    } catch (_: Exception) {
-        null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun params(encoded: String): Map<String, String> = buildMap {
