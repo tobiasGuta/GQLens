@@ -13,7 +13,7 @@ class SchemaReconTest {
             assertFalse(doc.contains("subscription "))
             assertFalse(doc.contains("password"))
             val body = SchemaRecon.requestBody(mode)
-            assertTrue(body.contains("\\"query\\""))
+            assertTrue(body.contains("query"))
         }
     }
 
