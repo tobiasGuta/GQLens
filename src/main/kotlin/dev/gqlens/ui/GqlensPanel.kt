@@ -141,6 +141,8 @@ class GqlensPanel(
             summaryScroll.isVisible = !compactMode.isSelected
             overview.revalidate()
             overview.repaint()
+            detailsSplit.dividerLocation = if (compactMode.isSelected) 68
+                else prefs.getInt("detailDivider", 190)
         }
         summaryScroll.isVisible = !compactMode.isSelected
         filters.add(JLabel("Search:"))
@@ -246,9 +248,10 @@ class GqlensPanel(
 
         detailsSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, overview, tabbed)
         detailsSplit.resizeWeight = 0.26
-        detailsSplit.dividerLocation = prefs.getInt("detailDivider", 190)
+        detailsSplit.dividerLocation = if (compactMode.isSelected) 68
+            else prefs.getInt("detailDivider", 190)
         detailsSplit.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) {
-            prefs.putInt("detailDivider", detailsSplit.dividerLocation)
+            if (!compactMode.isSelected) prefs.putInt("detailDivider", detailsSplit.dividerLocation)
         }
         workspace = JSplitPane(
             JSplitPane.HORIZONTAL_SPLIT, JScrollPane(operationTree), detailsSplit
