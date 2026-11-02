@@ -38,10 +38,26 @@ These are evidence **observations**, not security findings or proof that request
 
 **Beta verification:** Automated tests cover operation selection, response classification/correlation, evidence retention and UI component creation. Live desktop behavior and Proxy-history message-ID resolution still need hands-on validation before a stable release.
 
+## v0.2.0-beta.3: controlled schema recon (new)
+
+This prerelease builds upon the beta.2 evidence explorer and remains **passive by default**.
+
+- **Explore by host > endpoint path > observed operation**, instead of one long URL in the left tree.
+- **Compact operation overview** summarizes request count, matched responses, and last HTTP/GraphQL result.
+- **Response comparison** shows a distribution of HTTP statuses and GraphQL structural outcomes across the most recent retained evidence records.
+- **Recon (opt-in)** adds an explicit, single-request-per-confirmation GraphQL introspection utility for an endpoint already observed and currently within Burp Target scope.
+- Recon modes: **Root operations** lists declared query/mutation/subscription root field names; **Schema types and fields** reads GraphQL introspection type and field metadata. Both use standard schema reflection, not guessed application field names or a hardcoded list of application operations.
+- The extension constructs a **fresh unauthenticated POST** request with GraphQL-over-HTTP content negotiation. It does not replay captured cookies, authorization headers, variables, or session data.
+- Recon enforces the Burp scope check immediately before sending, **does not follow redirects**, waits up to 10 seconds for a response, does not retry automatically, and rejects responses larger than 512 KiB. It does not perform mutation execution, brute forcing, validation-error harvesting, or automatic crawling.
+- Recon parses only structural type and field names into in-memory UI state and limits types/fields retained. No raw body or error messages are saved.
+- Schema introspection may be disabled or restricted; **absence of schema data does not imply a vulnerability or a lack of GraphQL support**.
+
+**Testing status:** Automated Maven and headless Swing tests cover the new introspection parsing and workspace components. Manual testing inside Burp Community is still required before treating this as a stable release. Only send recon requests where the test program explicitly permits them.
+
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.2 prerelease** and download **GQLens-0.2.0-beta.2.jar** from **Assets** (not the source archives).
+2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.3 prerelease** and download **GQLens-0.2.0-beta.3.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
@@ -53,15 +69,15 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.2.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.3.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 
-**Passive collection only**: GQLens does not initiate HTTP requests. Captures are limited to requests that Burp marks in scope, and can be switched off. It ignores oversized HTTP bodies, limits GraphQL parse depth and retained field count, and holds at most 2,000 distinct operation fingerprints in memory. Every entry represents observation, not proof that any field is vulnerable or even part of a complete schema.
+**Passive collection with optional explicit recon**: GQLens never initiates requests in the background. Its separate Recon tab can send one standards-based introspection request only after confirmation. Captures are limited to requests that Burp marks in scope, and can be switched off. It ignores oversized HTTP bodies, limits GraphQL parse depth and retained field count, and holds at most 2,000 distinct operation fingerprints in memory. Every entry represents observation, not proof that any field is vulnerable or even part of a complete schema.
 
 The extension does **not** save raw request/response bodies, headers, cookies, variable values or query documents. It keeps endpoint origins/paths, operation names/kinds, observed field paths, query hash prefixes and counters. Endpoint paths and GraphQL names might still be sensitive; inspect exported data before sharing bug bounty evidence. Clear resets the in-memory inventory. Burp may separately retain HTTP history independently of GQLens.
 
-**Limitations:** captures traffic observed after the extension was loaded, not existing history; recognizes common HTTP transport formats, not multipart uploads, GraphQL-over-WebSocket or custom protocols; does not perform introspection or brute-force fields. Repeater handoff uses previously captured Proxy traffic only, never generated queries; it does not automatically send requests.
+**Limitations:** captures traffic observed after the extension was loaded, not existing history; recognizes common HTTP transport formats, not multipart uploads, GraphQL-over-WebSocket or custom protocols; does not automatically perform introspection or brute-force fields. Repeater handoff uses previously captured Proxy traffic only, never generated queries; it does not automatically send requests.
 
 ## Why this design?
 
