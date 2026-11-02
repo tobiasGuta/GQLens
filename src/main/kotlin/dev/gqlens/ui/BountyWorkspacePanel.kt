@@ -24,6 +24,7 @@ import javax.swing.JTextField
 import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
 import javax.swing.SwingWorker
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.table.DefaultTableModel
 
 /** No active tests: user-owned research cases, human-labeled contexts and evidence. */
@@ -73,6 +74,7 @@ class BountyWorkspacePanel(
     private val cancelImport = JButton("Cancel").apply { isEnabled = false }
     private val importLimit = JComboBox(arrayOf(100, 250, 500, 1000))
     private var activeWorker: SwingWorker<HistoryImportReport, Unit>? = null
+    private val importRunning = AtomicBoolean(false)
     private var shownCandidates = emptyList<InvestigationWorkspace.Candidate>()
 
     init {
@@ -240,17 +242,27 @@ class BountyWorkspacePanel(
     }
 
     private fun startImport() {
-        if (activeWorker != null) return
+        if (!importRunning.compareAndSet(false, true)) return
         val limit = importLimit.selectedItem as? Int ?: 250
         importButton.isEnabled = false
         cancelImport.isEnabled = true
         historyStatus.text = "Reading a maximum of " + limit + " in-scope entries from existing Proxy history."
         val worker = object : SwingWorker<HistoryImportReport, Unit>() {
-            override fun doInBackground(): HistoryImportReport = importHistory(limit)
+            override fun doInBackground(): HistoryImportReport = try {
+                importHistory(limit)
+            } finally {
+                importRunning.set(false)
+                SwingUtilities.invokeLater {
+                    if (activeWorker == null) {
+                        importButton.isEnabled = true
+                        cancelImport.isEnabled = false
+                    }
+                }
+            }
             override fun done() {
                 activeWorker = null
-                importButton.isEnabled = true
-                cancelImport.isEnabled = false
+                importButton.isEnabled = !importRunning.get()
+                cancelImport.isEnabled = importRunning.get()
                 historyStatus.text = if (isCancelled) {
                     "Import cancelled; already accepted metadata may remain in this session."
                 } else try {
@@ -330,7 +342,7 @@ class BountyWorkspacePanel(
                 "\nOnly session-local capture IDs are retained."
     }
 
-    fun isImporting(): Boolean = activeWorker != null
+    fun isImporting(): Boolean = importRunning.get()
 
     /** Called only after an explicit session Clear. Never reset the user's notes on traffic refresh. */
     fun resetSession() {
