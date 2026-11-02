@@ -113,10 +113,24 @@ This isolated beta builds on the schema investigator with **passive, evidence-dr
 
 **Testing:** Automated Kotlin tests cover diagnostics privacy, batch separation, endpoint/tool isolation, field-evidence mapping, and Swing type navigation. Burp Community desktop UI/clipboard tests remain required before a stable merge. Raw application data still belongs to Burp's own history, not GQLens's metadata store.
 
+## v0.2.0-beta.8: Bug Bounty Workspace
+
+An investigator-controlled, evidence-first addition to GQLens. It is not an autonomous vulnerability scanner.
+
+- **Manual Proxy history import:** Use the new `Bug Bounty > History import` tab to examine a selectable maximum of 100, 250, 500 or 1,000 existing in-scope Burp Proxy entries. This uses Montoya's supported read-only Proxy history interface, never sends target requests, parses supported GraphQL transports and response metadata, and drops raw request/response contents immediately after parsing. Already seen Proxy message IDs are skipped, including messages previously captured live. A cancellation button interrupts further metadata processing.
+- **Investigation queue:** Recomputed from retained evidence. It raises two generic *investigation prompts*: observed GraphQL errors and mismatches between requested root fields and available server-declared root fields. These do not imply vulnerabilities or severity, and require independent verification; no fixed application-specific field list, target names or vendor codes are used.
+- **Cases and test contexts:** Create analyst-owned case titles, notes, and verification states. Create up to 32 manually labeled, researcher-controlled contexts. Attach captured evidence references and assign a context label manually; account identity is **never** inferred from cookies, headers, variable values or response bodies. Notes are session-local and should not contain secrets.
+- **Provenance actions:** Select a candidate to jump to its exact in-session Evidence history row, or attach the latest retained supporting evidence to a selected case. Retained references are IDs and structural metadata, not copies of raw HTTP.
+- **Scoped and bounded:** No background scan, network replay, uncontrolled wordlists, mutation execution or automatically generated vulnerability reports. All new actions are read-only or local metadata edits. Prior opt-in single-request introspection remains unchanged.
+- **Storage and lifecycle:** GQLens retains up to 2,000 distinct operations, 3,000 evidence events, 100 cases, 32 contexts and 200 references per case in process memory. Records and labels are cleared on explicit GQLens session Clear or extension reload; Burp's own HTTP history remains independently managed.
+- **Verification:** Automated tests cover deduplication, scope handling, GraphQL batching, privacy-bounded diagnostics, user-defined case/context constraints and UI composition. A manual Burp Community desktop test remains necessary before stable merge.
+
+**Import limitation:** The bound applies to eligible in-scope Proxy history entries, not to an exhaustive index of every GraphQL exchange. With very large history, restrict your Burp scope and import in manageable batches. The API must inspect Proxy history to select entries; the import runs on a Swing worker to keep the UI responsive.
+
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.7 prerelease** and download **GQLens-0.2.0-beta.7.jar** from **Assets** (not the source archives).
+2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.8 prerelease** and download **GQLens-0.2.0-beta.8.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
@@ -128,7 +142,7 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.7.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.8.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 
@@ -136,7 +150,7 @@ The installable dependency-bundled file for this branch is at **target/GQLens-0.
 
 The extension does **not** save raw request/response bodies, headers, cookies, variable values or query documents. It keeps endpoint origins/paths, operation names/kinds, observed field paths, query hash prefixes and counters. Endpoint paths and GraphQL names might still be sensitive; inspect exported data before sharing bug bounty evidence. Clear resets the in-memory inventory. Burp may separately retain HTTP history independently of GQLens.
 
-**Limitations:** captures traffic observed after the extension was loaded, not existing history; recognizes common HTTP transport formats, not multipart uploads, GraphQL-over-WebSocket or custom protocols; does not automatically perform introspection or brute-force fields. Repeater handoff uses previously captured Proxy traffic only, never generated queries; it does not automatically send requests.
+**Limitations:** captures new traffic live and can optionally import a bounded subset of existing Proxy HTTP history; recognizes common HTTP transport formats, not multipart uploads, GraphQL-over-WebSocket or custom protocols; does not automatically perform introspection or brute-force fields. Repeater handoff uses previously captured Proxy traffic only, never generated queries; it does not automatically send requests.
 
 ## Why this design?
 
