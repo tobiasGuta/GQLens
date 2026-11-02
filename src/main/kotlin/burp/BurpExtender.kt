@@ -9,7 +9,7 @@ import burp.api.montoya.http.handler.RequestToBeSentAction
 import burp.api.montoya.http.handler.ResponseReceivedAction
 import dev.gqlens.core.GraphqlAnalyzer
 import dev.gqlens.core.ObservationContext
-import dev.gqlens.core.ObservationRow
+import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.ObservationStore
 import dev.gqlens.core.ResponseAnalyzer
 import dev.gqlens.ui.GqlensPanel
@@ -19,7 +19,8 @@ class BurpExtender : BurpExtension {
     override fun initialize(api: MontoyaApi) {
         api.extension().setName("GQLens")
         val store = ObservationStore()
-        val panel = GqlensPanel(store) { row -> sendCapturedEvidenceToRepeater(api, row) }
+        val panel = GqlensPanel(store) { event -> sendCapturedEvidenceToRepeater(api, event) }
+        api.userInterface().applyThemeToComponent(panel)
         api.userInterface().registerSuiteTab("GQLens", panel)
 
         api.http().registerHttpHandler(object : HttpHandler {
@@ -76,12 +77,12 @@ class BurpExtender : BurpExtension {
      * verify its parsed identity and in-scope status before opening Repeater. Neither
      * the request nor its credentials are persisted by GQLens.
      */
-    private fun sendCapturedEvidenceToRepeater(api: MontoyaApi, row: ObservationRow): String {
-        if (row.lastTool != "PROXY" || row.lastMessageId == null) {
+    private fun sendCapturedEvidenceToRepeater(api: MontoyaApi, event: EvidenceEvent): String {
+        if (event.tool != "PROXY") {
             return "Only Proxy observations with a message ID can be resolved from Proxy history."
         }
         return try {
-            val candidates = api.proxy().history { item -> item.id() == row.lastMessageId }
+            val candidates = api.proxy().history { item -> item.id() == event.messageId }
             val matched = candidates.firstOrNull { item ->
                 val request = item.finalRequest()
                 request.isInScope() && request.body().length() <= 262_144 &&
@@ -89,11 +90,12 @@ class BurpExtender : BurpExtension {
                         request.method(), request.url(), request.headerValue("Content-Type"),
                         request.bodyToString()
                     ).any {
-                        it.endpoint == row.endpoint && it.operation == row.operation &&
-                            it.kind == row.kind && it.fingerprint == row.fingerprint
+                        it.endpoint == event.endpoint && it.operation == event.operation &&
+                            it.kind == event.kind && it.fingerprint == event.fingerprint &&
+                            it.batchIndex == event.batchIndex
                     }
             } ?: return "Original matching Proxy message could not be resolved. No request was sent."
-            api.repeater().sendToRepeater(matched.finalRequest(), "GQLens: ${row.operation}")
+            api.repeater().sendToRepeater(matched.finalRequest(), "GQLens: ${event.operation}")
             "Opened matching captured request in Repeater. It has not been sent."
         } catch (_: Exception) {
             "Could not resolve the matching Proxy request. No request was sent."
