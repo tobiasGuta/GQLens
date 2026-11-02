@@ -54,6 +54,7 @@ class ObservationStore(
 
     private val rows = LinkedHashMap<String, ObservationRow>()
     private val evidence = LinkedHashMap<Long, EvidenceEvent>()
+    private val seenProxyIds = LinkedHashSet<Int>()
     private val pending = LinkedHashMap<String, MutableList<PendingLink>>()
     private var sequence = 0L
     private var rejected = 0L
@@ -104,6 +105,10 @@ class ObservationStore(
                 context.tool, context.messageId, now
             )
             evidence[event.id] = event
+            if (context.tool == "PROXY") {
+                seenProxyIds.add(context.messageId)
+                while (seenProxyIds.size > 12_000) seenProxyIds.remove(seenProxyIds.first())
+            }
             while (evidence.size > evidenceLimit) {
                 evidence.remove(evidence.keys.first())
                 evictedEvidence++
@@ -183,6 +188,11 @@ class ObservationStore(
         }.toList().takeLast(limit.coerceIn(1, 500)).asReversed()
     }
 
+    @Synchronized fun hasProxyMessage(messageId: Int): Boolean = messageId in seenProxyIds
+    /** Bounded session-local metadata for candidate generation and case references. */
+    @Synchronized fun evidenceSnapshot(): List<EvidenceEvent> = evidence.values.toList()
+    @Synchronized fun evidenceById(id: Long): EvidenceEvent? = evidence[id]
+
     @Synchronized fun rejectedCount(): Long = rejected
     @Synchronized fun evictedEvidenceCount(): Long = evictedEvidence
 
@@ -190,6 +200,7 @@ class ObservationStore(
     fun clear() {
         rows.clear()
         evidence.clear()
+        seenProxyIds.clear()
         pending.clear()
         sequence = 0
         rejected = 0
