@@ -77,4 +77,40 @@ class SchemaReconTest {
         assertEquals(128, result.rootTypes.single().fields.size)
         assertTrue(result.truncated)
     }
+
+    @Test
+    fun preservesNestedListNonNullTypesAndRequiredArgumentSemantics() {
+        val body = """
+            {"data":{"__schema":{"queryType":{"name":"ReadRoot","fields":[
+              {"name":"nodes","type":{"kind":"NON_NULL","ofType":{"kind":"LIST",
+                "ofType":{"kind":"NON_NULL","ofType":{"kind":"OBJECT","name":"Node"}}}},
+                "args":[
+                  {"name":"ids","defaultValue":null,"type":{"kind":"NON_NULL",
+                    "ofType":{"kind":"LIST","ofType":{"kind":"NON_NULL",
+                      "ofType":{"kind":"SCALAR","name":"ID"}}}}},
+                  {"name":"limit","defaultValue":"10","type":{"kind":"NON_NULL",
+                    "ofType":{"kind":"SCALAR","name":"Int"}}}
+                ]}
+              ]}}}}
+        """.trimIndent()
+        val result = SchemaRecon.parse(SchemaRecon.Mode.ROOT_FIELDS, 200, body)
+        val field = result.rootTypes.single().details.single()
+        assertEquals("[Node!]!", field.type?.display)
+        assertEquals("Node", field.type?.namedType)
+        assertEquals("OBJECT", field.type?.namedKind)
+        assertEquals("[ID!]!", field.args[0].type.display)
+        assertTrue(field.args[0].required)
+        assertFalse(field.args[1].required)
+        assertTrue(field.display.contains("ids: [ID!]!"))
+        assertTrue(SchemaRecon.document(SchemaRecon.Mode.ROOT_FIELDS).contains("ofType"))
+    }
+
+    @Test
+    fun legacyShapeWithoutSignatureDataRemainsMetadataOnly() {
+        val result = SchemaRecon.parse(SchemaRecon.Mode.ROOT_FIELDS, 200,
+            """{"data":{"__schema":{"queryType":{"name":"Query","fields":[{"name":"me"}]}}}}""")
+        assertEquals(listOf("me"), result.rootTypes.single().fields)
+        assertNull(result.rootTypes.single().details.single().type)
+        assertNull(QueryDraftBuilder.build("QUERY", result.rootTypes.single().details.single()))
+    }
 }
