@@ -5,6 +5,8 @@ import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.ObservationRow
 import dev.gqlens.core.ObservationStore
 import dev.gqlens.core.SchemaRecon
+import dev.gqlens.core.InvestigationWorkspace
+import dev.gqlens.core.HistoryImportReport
 import dev.gqlens.core.ApiSurfaceStore
 import java.awt.BorderLayout
 import java.awt.FlowLayout
@@ -52,7 +54,8 @@ class GqlensPanel(
     private val surfaceStore: ApiSurfaceStore = ApiSurfaceStore(),
     private val openEvidence: (EvidenceEvent) -> String = { "Opening captured evidence is unavailable." },
     private val runRecon: (String, SchemaRecon.Mode) -> SchemaRecon.Result =
-        { _, mode -> SchemaRecon.Result(mode, null, "RECON_NOT_CONFIGURED") }
+        { _, mode -> SchemaRecon.Result(mode, null, "RECON_NOT_CONFIGURED") },
+    private val importProxyHistory: (Int) -> HistoryImportReport = { HistoryImportReport() }
 ) : JPanel(BorderLayout()) {
     private data class OperationNode(val row: ObservationRow) {
         override fun toString(): String =
@@ -102,6 +105,11 @@ class GqlensPanel(
     private val openButton = JButton("Open selected Proxy capture in Repeater")
     private val copyButton = JButton("Copy evidence reference")
     private val tabbed = JTabbedPane()
+    private val research = InvestigationWorkspace()
+    private val bountyPanel = BountyWorkspacePanel(
+        research, store, surfaceStore, importProxyHistory,
+        { event -> jumpToEvidence(event) }
+    )
     private val surfacePanel = ApiSurfacePanel(
         surfaceStore,
         { store.snapshot() },
@@ -171,6 +179,8 @@ class GqlensPanel(
                 ) == JOptionPane.YES_OPTION) {
                 store.clear()
                 surfaceStore.clear()
+                research.clear()
+                bountyPanel.refresh()
                 selectedOperation = null
                 selectedEvidence = null
                 refresh()
@@ -245,6 +255,7 @@ class GqlensPanel(
         tabbed.addTab("Evidence history", evidencePanel)
         tabbed.addTab("Response", JScrollPane(responseDetail))
         tabbed.addTab("Recon (opt-in)", reconPanel)
+        tabbed.addTab("Bug Bounty", bountyPanel)
 
         detailsSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, overview, tabbed)
         detailsSplit.resizeWeight = 0.26
@@ -376,6 +387,7 @@ class GqlensPanel(
             selectOperation(row.row)
         }
         surfacePanel.refresh()
+        bountyPanel.refresh()
         notice.text = "Evidence retained: latest 3,000 captures; " +
             store.evictedEvidenceCount() + " older records evicted. Burp handles raw HTTP independently."
     }
