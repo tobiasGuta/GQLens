@@ -26,7 +26,7 @@ class GqlensPanelTest {
         SwingUtilities.invokeAndWait {
             val panel = GqlensPanel(store)
             val tabs = allComponents(panel).filterIsInstance<JTabbedPane>().single()
-            assertEquals(listOf("Fields", "Evidence history", "Response"),
+            assertEquals(listOf("Fields", "Evidence history", "Response", "Recon (opt-in)"),
                 (0 until tabs.tabCount).map { tabs.getTitleAt(it) })
             assertTrue(allComponents(panel).filterIsInstance<JSplitPane>().size >= 3)
             assertTrue(allComponents(panel).filterIsInstance<JTree>().size >= 2)
