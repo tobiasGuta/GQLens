@@ -1,210 +1,530 @@
 package dev.gqlens.ui
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.ObservationRow
 import dev.gqlens.core.ObservationStore
 import java.awt.BorderLayout
 import java.awt.FlowLayout
-import java.time.Instant
+import java.awt.GridLayout
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.prefs.Preferences
 import javax.swing.JButton
 import javax.swing.JCheckBox
+import javax.swing.JComboBox
 import javax.swing.JFileChooser
 import javax.swing.JLabel
+import javax.swing.JMenuItem
 import javax.swing.JOptionPane
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import javax.swing.JScrollPane
 import javax.swing.JSplitPane
+import javax.swing.JTabbedPane
 import javax.swing.JTable
 import javax.swing.JTextArea
 import javax.swing.JTextField
+import javax.swing.JTree
 import javax.swing.SwingUtilities
+import javax.swing.Timer
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import javax.swing.table.DefaultTableModel
+import javax.swing.table.TableColumn
+import javax.swing.tree.DefaultMutableTreeNode
+import javax.swing.tree.DefaultTreeModel
+import javax.swing.tree.TreePath
 
-/** UI shows structural metadata only; no raw HTTP requests, cookies, or variable values. */
+/**
+ * Endpoint-first investigation workspace. The UI and export contain metadata only.
+ * Swing state is modified on the EDT; capture handlers use store snapshots.
+ */
 class GqlensPanel(
     private val store: ObservationStore,
-    private val openEvidence: (ObservationRow) -> String = { "Evidence navigation is unavailable." }
+    private val openEvidence: (EvidenceEvent) -> String = { "Opening captured evidence is unavailable." }
 ) : JPanel(BorderLayout()) {
+    private data class OperationNode(val row: ObservationRow) {
+        override fun toString(): String =
+            row.kind + "  " + row.operation + "  [" + row.fingerprint.take(8) + "]"
+    }
+
+    private val prefs = Preferences.userNodeForPackage(GqlensPanel::class.java)
     private val capture = AtomicBoolean(true)
     private val pendingRefresh = AtomicBoolean(false)
-    private val filter = JTextField(28)
-    private val countLabel = JLabel("0 unique operations")
-    private val evidenceStatus = JLabel("Captured message IDs are session-local.")
-    private val toRepeater = JButton("Send selected Proxy request to Repeater")
-    private val tableModel = object : DefaultTableModel(
-        arrayOf("Endpoint", "Type", "Operation", "Fields", "Seen", "HTTP", "Result", "Tool", "ID"), 0
+    private val search = JTextField(22)
+    private val typeFilter = JComboBox<String>()
+    private val toolFilter = JComboBox<String>()
+    private val resultFilter = JComboBox<String>()
+    private var updatingFilters = false
+
+    private val countLabel = JLabel("No observations")
+    private val notice = JLabel("Read-only capture; evidence references are local to this Burp session.")
+    private val root = DefaultMutableTreeNode("Endpoints")
+    private val operationTree = JTree(DefaultTreeModel(root))
+    private val fieldTree = JTree(DefaultTreeModel(DefaultMutableTreeNode("Requested fields")))
+    private val summary = JTextArea(7, 50)
+    private val responseDetail = JTextArea(12, 50)
+    private val evidenceDetail = JTextArea(3, 50)
+    private val evidenceModel = object : DefaultTableModel(
+        arrayOf("Captured (UTC)", "Tool", "Message ID", "HTTP", "Result", "Batch"), 0
     ) {
         override fun isCellEditable(row: Int, column: Int) = false
     }
-    private val table = JTable(tableModel)
-    private val details = JTextArea("Browse an in-scope GraphQL API through Burp.\nSelect an observed operation to see its field paths.")
-    private var visibleRows = emptyList<ObservationRow>()
+    private val evidenceTable = JTable(evidenceModel)
+    private lateinit var savedColumns: List<TableColumn>
+    private val openButton = JButton("Open selected Proxy capture in Repeater")
+    private val copyButton = JButton("Copy evidence reference")
+    private val tabbed = JTabbedPane()
+    private val workspace: JSplitPane
+    private val detailsSplit: JSplitPane
+    private var selectedOperation: ObservationRow? = null
+    private var selectedEvidence: EvidenceEvent? = null
+    private var visibleEvidence = emptyList<EvidenceEvent>()
+    private val refreshTimer = Timer(200) {
+        pendingRefresh.set(false)
+        refresh()
+    }.apply { isRepeats = false }
 
     val captureEnabled: Boolean get() = capture.get()
 
     init {
-        val toolbar = JPanel(FlowLayout(FlowLayout.LEFT))
-        val enabled = JCheckBox("Capture new in-scope requests", true)
-        enabled.addActionListener { capture.set(enabled.isSelected) }
-        toolbar.add(enabled)
-        toolbar.add(JLabel("Filter:"))
-        toolbar.add(filter)
-        toolbar.add(countLabel)
+        val top = JPanel(GridLayout(2, 1))
+        val filters = JPanel(FlowLayout(FlowLayout.LEFT))
+        val captureCheck = JCheckBox("Capture new in-scope requests", true)
+        captureCheck.addActionListener { capture.set(captureCheck.isSelected) }
+        filters.add(captureCheck)
+        filters.add(JLabel("Search:"))
+        filters.add(search)
+        filters.add(JLabel("Type:"))
+        filters.add(typeFilter)
+        filters.add(JLabel("Tool:"))
+        filters.add(toolFilter)
+        filters.add(JLabel("Result:"))
+        filters.add(resultFilter)
+        top.add(filters)
+
+        val actions = JPanel(FlowLayout(FlowLayout.LEFT))
+        actions.add(countLabel)
+        val export = JButton("Export metadata JSON")
+        export.addActionListener { exportMetadata() }
+        val columns = JButton("Evidence columns")
+        columns.addActionListener { showColumnMenu(columns) }
+        val reset = JButton("Reset layout")
+        reset.addActionListener { resetLayout() }
         val clear = JButton("Clear")
         clear.addActionListener {
-            if (JOptionPane.showConfirmDialog(this, "Clear all observations in this GQLens session?",
-                    "Clear", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+            if (JOptionPane.showConfirmDialog(
+                    this, "Clear all observations and evidence in this GQLens session?",
+                    "Clear", JOptionPane.YES_NO_OPTION
+                ) == JOptionPane.YES_OPTION) {
                 store.clear()
+                selectedOperation = null
+                selectedEvidence = null
                 refresh()
             }
         }
-        val export = JButton("Export metadata JSON")
-        export.addActionListener { exportMetadata() }
-        toolbar.add(export)
-        toolbar.add(clear)
-        toRepeater.isEnabled = false
-        toRepeater.addActionListener { openSelectedInRepeater() }
-        toolbar.add(toRepeater)
-        add(toolbar, BorderLayout.NORTH)
+        actions.add(export)
+        actions.add(columns)
+        actions.add(reset)
+        actions.add(clear)
+        top.add(actions)
+        add(top, BorderLayout.NORTH)
 
-        table.setSelectionMode(javax.swing.ListSelectionModel.SINGLE_SELECTION)
-        table.autoCreateRowSorter = true
-        table.selectionModel.addListSelectionListener { event ->
-            if (!event.valueIsAdjusting) showDetails()
+        operationTree.isRootVisible = false
+        operationTree.showsRootHandles = true
+        operationTree.selectionModel.selectionMode =
+            javax.swing.tree.TreeSelectionModel.SINGLE_TREE_SELECTION
+        operationTree.addTreeSelectionListener {
+            val node = operationTree.lastSelectedPathComponent as? DefaultMutableTreeNode
+            val row = (node?.userObject as? OperationNode)?.row
+            if (row != null) selectOperation(row)
         }
-        details.isEditable = false
-        details.lineWrap = false
-        val split = JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(table), JScrollPane(details))
-        split.resizeWeight = 0.65
-        add(split, BorderLayout.CENTER)
-        val footer = JPanel(BorderLayout())
-        footer.add(evidenceStatus, BorderLayout.NORTH)
-        footer.add(JLabel("PASSIVE ONLY  |  Burp target scope enforced  |  Metadata only; Repeater never auto-sends"),
-            BorderLayout.SOUTH)
+        operationTree.toolTipText = "Select a parsed operation. Entries are observations, not findings."
+
+        fieldTree.isRootVisible = false
+        fieldTree.showsRootHandles = true
+        summary.isEditable = false
+        summary.lineWrap = true
+        summary.wrapStyleWord = true
+        responseDetail.isEditable = false
+        responseDetail.lineWrap = true
+        responseDetail.wrapStyleWord = true
+        evidenceDetail.isEditable = false
+        evidenceDetail.lineWrap = true
+
+        evidenceTable.autoCreateRowSorter = true
+        evidenceTable.selectionModel.selectionMode =
+            javax.swing.ListSelectionModel.SINGLE_SELECTION
+        savedColumns = (0 until evidenceTable.columnModel.columnCount)
+            .map { evidenceTable.columnModel.getColumn(it) }
+        savedColumns.forEachIndexed { index, column ->
+            if (!prefs.getBoolean("showEvidenceColumn" + index, true)) {
+                evidenceTable.columnModel.removeColumn(column)
+            }
+        }
+        evidenceTable.selectionModel.addListSelectionListener { event ->
+            if (!event.valueIsAdjusting) selectEvidenceFromTable()
+        }
+
+        openButton.isEnabled = false
+        openButton.toolTipText = "Only original Proxy history can currently be resolved; Repeater captures remain identifiable by ID."
+        openButton.addActionListener { openSelectedEvidence() }
+        copyButton.isEnabled = false
+        copyButton.addActionListener { copyEvidenceReference() }
+        val evidenceActions = JPanel(FlowLayout(FlowLayout.LEFT))
+        evidenceActions.add(openButton)
+        evidenceActions.add(copyButton)
+        val evidencePanel = JPanel(BorderLayout())
+        evidencePanel.add(evidenceActions, BorderLayout.NORTH)
+        val evidenceBottom = JScrollPane(evidenceDetail)
+        val evidenceSplit = JSplitPane(
+            JSplitPane.VERTICAL_SPLIT, JScrollPane(evidenceTable), evidenceBottom
+        )
+        evidenceSplit.resizeWeight = 0.78
+        evidenceSplit.dividerLocation = prefs.getInt("evidenceDivider", 240)
+        evidenceSplit.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) {
+            prefs.putInt("evidenceDivider", evidenceSplit.dividerLocation)
+        }
+        evidencePanel.add(evidenceSplit, BorderLayout.CENTER)
+
+        tabbed.addTab("Fields", JScrollPane(fieldTree))
+        tabbed.addTab("Evidence history", evidencePanel)
+        tabbed.addTab("Response", JScrollPane(responseDetail))
+
+        detailsSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(summary), tabbed)
+        detailsSplit.resizeWeight = 0.26
+        detailsSplit.dividerLocation = prefs.getInt("detailDivider", 190)
+        detailsSplit.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) {
+            prefs.putInt("detailDivider", detailsSplit.dividerLocation)
+        }
+        workspace = JSplitPane(
+            JSplitPane.HORIZONTAL_SPLIT, JScrollPane(operationTree), detailsSplit
+        )
+        workspace.resizeWeight = 0.30
+        workspace.dividerLocation = prefs.getInt("workspaceDivider", 330)
+        workspace.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) {
+            prefs.putInt("workspaceDivider", workspace.dividerLocation)
+        }
+        add(workspace, BorderLayout.CENTER)
+
+        val footer = JPanel(GridLayout(2, 1))
+        footer.add(notice)
+        footer.add(JLabel("PASSIVE ONLY  |  Burp target scope  |  Metadata only  |  Repeater handoff never auto-sends"))
         add(footer, BorderLayout.SOUTH)
 
-        filter.document.addDocumentListener(object : DocumentListener {
+        search.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent) = refresh()
             override fun removeUpdate(e: DocumentEvent) = refresh()
             override fun changedUpdate(e: DocumentEvent) = refresh()
         })
+        listOf(typeFilter, toolFilter, resultFilter).forEach {
+            it.addActionListener { if (!updatingFilters) refresh() }
+        }
+        refresh()
     }
 
-    /** Coalesce bursts of HTTP events into at most one queued Swing refresh. */
+    /** Coalesces high-frequency events into a bounded Swing refresh rate. */
     fun scheduleRefresh() {
         if (pendingRefresh.compareAndSet(false, true)) {
-            SwingUtilities.invokeLater {
-                pendingRefresh.set(false)
-                refresh()
-            }
+            SwingUtilities.invokeLater { refreshTimer.restart() }
         }
     }
 
-    private fun selectedRow(): ObservationRow? {
-        val viewIndex = table.selectedRow
-        val modelIndex = if (viewIndex < 0) -1 else table.convertRowIndexToModel(viewIndex)
-        return visibleRows.getOrNull(modelIndex)
+    private fun filtersFor(snapshot: List<ObservationRow>) {
+        updatingFilters = true
+        try {
+            updateOptions(typeFilter, "All types", snapshot.map { it.kind })
+            updateOptions(toolFilter, "All tools", snapshot.map { it.lastTool })
+            updateOptions(resultFilter, "All results", snapshot.map { it.lastResponseShape })
+        } finally {
+            updatingFilters = false
+        }
+    }
+
+    private fun updateOptions(combo: JComboBox<String>, all: String, options: List<String>) {
+        val selected = combo.selectedItem as? String ?: all
+        val items = (listOf(all) + options.filter { it.isNotBlank() }.distinct().sorted())
+        if ((0 until combo.itemCount).map { combo.getItemAt(it) } != items) {
+            combo.removeAllItems()
+            items.forEach { combo.addItem(it) }
+        }
+        combo.selectedItem = if (selected in items) selected else all
     }
 
     private fun refresh() {
         if (!SwingUtilities.isEventDispatchThread()) {
-            scheduleRefresh()
+            SwingUtilities.invokeLater { refresh() }
             return
         }
-        val selected = selectedRow()?.let { listOf(it.endpoint, it.kind, it.operation, it.fingerprint) }
-        val term = filter.text.trim()
         val snapshot = store.snapshot()
-        visibleRows = snapshot.filter {
-            term.isEmpty() ||
-                it.endpoint.contains(term, ignoreCase = true) ||
-                it.operation.contains(term, ignoreCase = true) ||
-                it.kind.contains(term, ignoreCase = true) ||
-                it.fieldPaths.any { path -> path.contains(term, ignoreCase = true) } ||
-                it.lastResponseShape.contains(term, ignoreCase = true)
+        filtersFor(snapshot)
+        val needle = search.text.trim()
+        val kind = typeFilter.selectedItem as? String ?: "All types"
+        val tool = toolFilter.selectedItem as? String ?: "All tools"
+        val result = resultFilter.selectedItem as? String ?: "All results"
+        val filtered = snapshot.filter { row ->
+            (kind == "All types" || row.kind == kind) &&
+                (tool == "All tools" || row.lastTool == tool) &&
+                (result == "All results" || row.lastResponseShape == result) &&
+                (needle.isBlank() || row.endpoint.contains(needle, true) ||
+                    row.kind.contains(needle, true) ||
+                    row.operation.contains(needle, true) ||
+                    row.fieldPaths.any { it.contains(needle, true) })
         }
-        tableModel.rowCount = 0
-        visibleRows.forEach {
-            tableModel.addRow(arrayOf(
-                it.endpoint, it.kind, it.operation, it.fieldPaths.size, it.seen,
-                it.lastHttpStatus ?: "-", it.lastResponseShape,
-                it.lastTool, it.lastMessageId ?: "-"
+        countLabel.text = snapshot.size.toString() + " operations / " + filtered.size +
+            " shown / " + store.rejectedCount() + " rejected"
+        val selectionKey = selectedOperation?.let {
+            listOf(it.endpoint, it.kind, it.operation, it.fingerprint)
+        }
+        root.removeAllChildren()
+        var nextPath: TreePath? = null
+        for ((endpoint, rows) in filtered.groupBy { it.endpoint }.toSortedMap()) {
+            val endpointNode = DefaultMutableTreeNode(endpoint)
+            root.add(endpointNode)
+            for (row in rows.sortedWith(compareBy({ it.kind }, { it.operation }, { it.fingerprint }))) {
+                val node = DefaultMutableTreeNode(OperationNode(row))
+                endpointNode.add(node)
+                if (listOf(row.endpoint, row.kind, row.operation, row.fingerprint) == selectionKey) {
+                    nextPath = TreePath(node.path)
+                }
+            }
+        }
+        (operationTree.model as DefaultTreeModel).reload()
+        for (i in 0 until minOf(operationTree.rowCount, 80)) operationTree.expandRow(i)
+        if (nextPath != null) {
+            operationTree.selectionPath = nextPath
+        } else if (selectionKey == null && root.childCount > 0) {
+            val endpoint = root.getChildAt(0) as DefaultMutableTreeNode
+            if (endpoint.childCount > 0) {
+                operationTree.selectionPath = TreePath(
+                    (endpoint.getChildAt(0) as DefaultMutableTreeNode).path
+                )
+            }
+        } else {
+            selectedOperation = null
+            selectedEvidence = null
+            showEmptyDetails()
+        }
+        if (nextPath != null) {
+            val row = (nextPath.lastPathComponent as DefaultMutableTreeNode)
+                .userObject as OperationNode
+            selectOperation(row.row)
+        }
+        notice.text = "Evidence retained: latest 3,000 captures; " +
+            store.evictedEvidenceCount() + " older records evicted. Burp handles raw HTTP independently."
+    }
+
+    private fun selectOperation(row: ObservationRow) {
+        selectedOperation = row
+        val latest = store.snapshot().firstOrNull {
+            it.endpoint == row.endpoint && it.kind == row.kind &&
+                it.operation == row.operation && it.fingerprint == row.fingerprint
+        } ?: row
+        selectedOperation = latest
+        summary.text = buildString {
+            appendLine("Endpoint: " + latest.endpoint)
+            appendLine("Requested: " + latest.kind + "  " + latest.operation)
+            appendLine("Document SHA-256 prefix: " + latest.fingerprint)
+            appendLine("Requests: " + latest.seen + "   Correlated responses: " + latest.responsesSeen)
+            appendLine("First: " + formatTime(latest.firstSeenMillis))
+            appendLine("Last:  " + formatTime(latest.lastSeenMillis))
+            appendLine("Last tool / message: " + latest.lastTool + " / " + (latest.lastMessageId ?: "-"))
+            appendLine("Last HTTP / response: " + (latest.lastHttpStatus ?: "-") +
+                " / " + latest.lastResponseShape)
+        }
+        summary.caretPosition = 0
+        populateFields(latest.fieldPaths)
+        populateEvidence(latest)
+    }
+
+    private fun populateFields(paths: List<String>) {
+        val rootFields = DefaultMutableTreeNode("Requested fields (not proof of execution)")
+        for (path in paths) {
+            var parent = rootFields
+            for (segment in path.split('.')) {
+                val match = (0 until parent.childCount)
+                    .map { parent.getChildAt(it) as DefaultMutableTreeNode }
+                    .firstOrNull { it.userObject == segment }
+                val node = match ?: DefaultMutableTreeNode(segment).also { parent.add(it) }
+                parent = node
+            }
+        }
+        fieldTree.model = DefaultTreeModel(rootFields)
+        for (i in 0 until minOf(fieldTree.rowCount, 150)) fieldTree.expandRow(i)
+    }
+
+    private fun populateEvidence(row: ObservationRow) {
+        val previousId = selectedEvidence?.id
+        visibleEvidence = store.evidenceFor(row)
+        evidenceModel.rowCount = 0
+        visibleEvidence.forEach { event ->
+            evidenceModel.addRow(arrayOf(
+                formatTime(event.observedAtMillis), event.tool, event.messageId,
+                event.httpStatus ?: "-", event.responseShape, event.batchIndex
             ))
         }
-        countLabel.text = snapshot.size.toString() + " unique / " + visibleRows.size +
-            " shown / " + store.rejectedCount() + " rejected at capacity"
-        val index = visibleRows.indexOfFirst {
-            selected == listOf(it.endpoint, it.kind, it.operation, it.fingerprint)
-        }
+        val index = visibleEvidence.indexOfFirst { it.id == previousId }
         if (index >= 0) {
-            val viewIndex = table.convertRowIndexToView(index)
-            if (viewIndex >= 0) table.selectionModel.setSelectionInterval(viewIndex, viewIndex)
+            val view = evidenceTable.convertRowIndexToView(index)
+            if (view >= 0) evidenceTable.selectionModel.setSelectionInterval(view, view)
+        } else if (visibleEvidence.isNotEmpty()) {
+            val view = evidenceTable.convertRowIndexToView(0)
+            if (view >= 0) evidenceTable.selectionModel.setSelectionInterval(view, view)
+        } else {
+            selectedEvidence = null
+            evidenceDetail.text = "No individual capture metadata available."
+            openButton.isEnabled = false
+            copyButton.isEnabled = false
+            updateResponseDetail()
         }
-        showDetails()
     }
 
-    private fun showDetails() {
-        val row = selectedRow()
-        toRepeater.isEnabled = row != null && row.lastTool == "PROXY" && row.lastMessageId != null
-        if (row == null) {
-            details.text = "Select a requested operation to inspect its field paths and session-local evidence reference."
-            return
-        }
-        details.text = buildString {
-            appendLine("Endpoint: " + row.endpoint)
-            appendLine("Requested operation: " + row.kind + " " + row.operation)
-            appendLine("Document SHA-256 prefix: " + row.fingerprint)
-            appendLine("Observed requests: " + row.seen)
-            appendLine("First seen (UTC): " + Instant.ofEpochMilli(row.firstSeenMillis))
-            appendLine("Last seen (UTC): " + Instant.ofEpochMilli(row.lastSeenMillis))
-            appendLine("Last Burp tool: " + row.lastTool)
-            appendLine("Last message ID (session-local): " + (row.lastMessageId ?: "unavailable"))
-            appendLine("Last HTTP status: " + (row.lastHttpStatus ?: "not observed"))
-            appendLine("Last response structure: " + row.lastResponseShape)
-            appendLine("Correlated responses: " + row.responsesSeen)
-            appendLine()
-            appendLine("Requested field paths (not proof of execution or authorization):")
-            if (row.fieldPaths.isEmpty()) appendLine("(No query document; persisted hash only)")
-            else row.fieldPaths.forEach { appendLine("  " + it) }
-        }
-        details.caretPosition = 0
-    }
-
-    private fun openSelectedInRepeater() {
-        val row = selectedRow() ?: return
-        if (row.lastTool != "PROXY" || row.lastMessageId == null) return
-        toRepeater.isEnabled = false
-        evidenceStatus.text = "Resolving exact captured message in Burp Proxy history..."
-        Thread({
-            val message = try { openEvidence(row) }
-                catch (_: Exception) { "Unable to resolve evidence. No request was sent." }
-            SwingUtilities.invokeLater {
-                evidenceStatus.text = message
-                showDetails()
+    private fun selectEvidenceFromTable() {
+        val viewIndex = evidenceTable.selectedRow
+        val index = if (viewIndex < 0) -1 else evidenceTable.convertRowIndexToModel(viewIndex)
+        selectedEvidence = visibleEvidence.getOrNull(index)
+        val event = selectedEvidence
+        openButton.isEnabled = event?.tool == "PROXY"
+        copyButton.isEnabled = event != null
+        evidenceDetail.text = if (event == null) "Select a captured exchange." else buildString {
+            appendLine("Captured: " + formatTime(event.observedAtMillis))
+            appendLine("Burp tool: " + event.tool + "   Message ID: " + event.messageId)
+            appendLine("Batch index: " + event.batchIndex)
+            appendLine("HTTP status: " + (event.httpStatus ?: "pending or unobserved"))
+            appendLine("GraphQL response shape: " + event.responseShape)
+            if (event.tool != "PROXY") {
+                appendLine("Existing Repeater tabs cannot be directly selected through the Montoya API.")
             }
-        }, "GQLens-evidence-resolution").apply {
-            isDaemon = true
-            start()
         }
+        evidenceDetail.caretPosition = 0
+        updateResponseDetail()
+    }
+
+    private fun updateResponseDetail() {
+        val row = selectedOperation
+        val event = selectedEvidence
+        responseDetail.text = if (row == null) {
+            "Select an operation to inspect its response classification."
+        } else buildString {
+            appendLine("Aggregate last status: " + (row.lastHttpStatus ?: "not observed"))
+            appendLine("Aggregate last result: " + row.lastResponseShape)
+            appendLine("Matched responses: " + row.responsesSeen + " of " + row.seen + " requests")
+            appendLine()
+            if (event != null) {
+                appendLine("Selected capture #" + event.id + ": " + event.tool +
+                    " message " + event.messageId)
+                appendLine("HTTP status: " + (event.httpStatus ?: "not observed"))
+                appendLine("Response structure: " + event.responseShape)
+            }
+            appendLine()
+            appendLine("DATA and PARTIAL_DATA describe response structure only.")
+            appendLine("An HTTP 200 is not proof of GraphQL success or authorization.")
+            appendLine("GQLens never stores response values or GraphQL error messages.")
+        }
+        responseDetail.caretPosition = 0
+    }
+
+    private fun openSelectedEvidence() {
+        val evidence = selectedEvidence ?: return
+        if (evidence.tool != "PROXY") return
+        openButton.isEnabled = false
+        notice.text = "Resolving original Proxy request; no traffic will be sent..."
+        Thread({
+            val result = try { openEvidence(evidence) } catch (_: Exception) {
+                "Unable to resolve Proxy evidence. No request was sent."
+            }
+            SwingUtilities.invokeLater {
+                notice.text = result
+                openButton.isEnabled = selectedEvidence?.tool == "PROXY"
+            }
+        }, "GQLens-evidence-navigation").apply { isDaemon = true; start() }
+    }
+
+    private fun copyEvidenceReference() {
+        val event = selectedEvidence ?: return
+        val ref = "GQLens evidence: " + event.endpoint + " | " + event.kind + " " +
+            event.operation + " | " + event.tool + " message " + event.messageId +
+            " | " + formatTime(event.observedAtMillis) + " | batch " + event.batchIndex
+        try {
+            Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(ref), null)
+            notice.text = "Copied session-local evidence reference; no raw HTTP copied."
+        } catch (_: Exception) {
+            notice.text = "Clipboard unavailable. Message ID: " + event.messageId
+        }
+    }
+
+    private fun showColumnMenu(anchor: JButton) {
+        val menu = JPopupMenu()
+        savedColumns.forEachIndexed { index, column ->
+            val visible = (0 until evidenceTable.columnModel.columnCount)
+                .any { evidenceTable.columnModel.getColumn(it) === column }
+            val item = javax.swing.JCheckBoxMenuItem(column.headerValue.toString(), visible)
+            item.addActionListener {
+                if (item.isSelected && !visible) evidenceTable.columnModel.addColumn(column)
+                else if (!item.isSelected && visible) evidenceTable.columnModel.removeColumn(column)
+                prefs.putBoolean("showEvidenceColumn" + index, item.isSelected)
+            }
+            menu.add(item)
+        }
+        menu.show(anchor, 0, anchor.height)
+    }
+
+    private fun resetLayout() {
+        workspace.dividerLocation = 330
+        detailsSplit.dividerLocation = 190
+        savedColumns.forEachIndexed { index, column ->
+            if ((0 until evidenceTable.columnModel.columnCount).none {
+                    evidenceTable.columnModel.getColumn(it) === column
+                }) evidenceTable.columnModel.addColumn(column)
+            prefs.putBoolean("showEvidenceColumn" + index, true)
+        }
+        notice.text = "Layout reset. Divider positions and visible columns can be customized."
+    }
+
+    private fun showEmptyDetails() {
+        summary.text = "Browse an in-scope GraphQL API to collect passive evidence."
+        fieldTree.model = DefaultTreeModel(DefaultMutableTreeNode("No selected operation"))
+        evidenceModel.rowCount = 0
+        visibleEvidence = emptyList()
+        evidenceDetail.text = "No evidence selected."
+        responseDetail.text = "No response selected."
+        openButton.isEnabled = false
+        copyButton.isEnabled = false
     }
 
     private fun exportMetadata() {
         val chooser = JFileChooser()
-        chooser.selectedFile = java.io.File("gqlens-observations.json")
+        chooser.selectedFile = java.io.File("gqlens-evidence-metadata.json")
         if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return
         val destination = chooser.selectedFile
-        if (destination.exists() && JOptionPane.showConfirmDialog(this, "Overwrite the selected file?",
-                "Confirm overwrite", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return
+        if (destination.exists() && JOptionPane.showConfirmDialog(
+                this, "Overwrite the selected file?", "Confirm overwrite",
+                JOptionPane.YES_NO_OPTION
+            ) != JOptionPane.YES_OPTION) return
         try {
-            val json = ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(store.snapshot())
+            val rows = store.snapshot()
+            val data = linkedMapOf(
+                "formatVersion" to 2,
+                "operations" to rows,
+                "evidence" to rows.flatMap { store.evidenceFor(it, 1000) },
+                "evictedEvidence" to store.evictedEvidenceCount()
+            )
+            val json = ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(data)
             Files.writeString(destination.toPath(), json, StandardCharsets.UTF_8)
-            JOptionPane.showMessageDialog(this, "Exported structural metadata only.")
+            JOptionPane.showMessageDialog(this,
+                "Exported metadata only. Endpoint paths and operation names may still be sensitive.")
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, "Unable to export: " + e.message, "Error", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(
+                this, "Unable to export: " + e.message, "Error", JOptionPane.ERROR_MESSAGE
+            )
         }
     }
+
+    private fun formatTime(epochMillis: Long): String =
+        if (epochMillis <= 0) "-" else Instant.ofEpochMilli(epochMillis).toString()
 }
