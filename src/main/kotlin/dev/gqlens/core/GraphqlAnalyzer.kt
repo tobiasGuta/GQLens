@@ -59,7 +59,7 @@ object GraphqlAnalyzer {
                 ct.contains("application/graphql") -> candidates.add(Candidate(body, null, null, 0))
                 ct.contains("application/x-www-form-urlencoded") -> {
                     val parameters = params(body)
-                    candidates.add(parameters["query"] to persistedHash(parameters["extensions"]))
+                    candidates.add(Candidate(parameters["query"], persistedHash(parameters["extensions"]), parameters["operationName"], 0))
                 }
                 (ct.contains("json") || trimmed.startsWith("{") || trimmed.startsWith("[")) -> {
                     try {
