@@ -308,7 +308,7 @@ class GqlensPanel(
             val hostNode = DefaultMutableTreeNode(host)
             root.add(hostNode)
             for ((endpoint, rows) in hostRows.groupBy { it.endpoint }.toSortedMap()) {
-                val pathLabel = try { URI(endpoint).rawPath.ifNullOrEmpty("/") }
+                val pathLabel = try { URI(endpoint).rawPath?.ifEmpty { "/" } ?: "/" }
                     catch (_: Exception) { endpoint }
                 val endpointNode = DefaultMutableTreeNode(pathLabel)
                 hostNode.add(endpointNode)
