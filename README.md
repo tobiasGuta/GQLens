@@ -12,6 +12,21 @@
 - Exports structural metadata as JSON. Holds data in memory, not in project storage.
 - No active enumeration, scanner integration, background connections, request modification, or Pro-only APIs.
 
+## Development branch: evidence-linked passive explorer
+
+The `feat/passive-evidence-explorer` branch is **unreleased**. It adds:
+
+- Selected-operation awareness for multi-operation GraphQL documents, including GET, JSON POST, and URL-encoded POST. Unselected operations are not recorded as if executed; ambiguous multi-operation requests are omitted.
+- Passive response classification (`DATA`, `ERRORS`, `PARTIAL_DATA`, `NULL_DATA`, etc.) and HTTP status, without saving returned field values or GraphQL error messages.
+- Metadata-only provenance: first/last observation time, Burp tool name, session-local message ID, and correlated response count.
+- Bounded response correlation by matching Burp tool and message ID. JSON batch responses are matched to their corresponding request index where present.
+- An evidence-aware explorer: searchable HTTP outcome and provenance columns, detailed metadata, and an explicit **Send selected Proxy request to Repeater** action.
+- Before opening Repeater, GQLens attempts to resolve the original request from Burp's existing Proxy history and confirms its GraphQL identity and current target scope. **This never automatically sends the request.** If Burp's HTTP handler message ID cannot be resolved to a matching Proxy history item, it reports that limitation rather than guessing.
+
+These are evidence **observations**, not security findings or proof that requested fields executed successfully. GraphQL field paths may include selections excluded at runtime by directives or type conditions. HTTP 200 is not equivalent to GraphQL operation success.
+
+**Development verification:** Unit tests cover operation selection, response shapes, matched batch responses, mismatched message IDs, and capacity bounds. Burp Community desktop loading, live correlation, and Repeater handoff still require manual validation before release.
+
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
