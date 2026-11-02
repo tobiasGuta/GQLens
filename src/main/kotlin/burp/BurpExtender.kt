@@ -14,6 +14,9 @@ import burp.api.montoya.http.handler.HttpResponseReceived
 import burp.api.montoya.http.handler.RequestToBeSentAction
 import burp.api.montoya.http.handler.ResponseReceivedAction
 import dev.gqlens.core.GraphqlAnalyzer
+import dev.gqlens.core.HistoryImporter
+import dev.gqlens.core.HistoricalExchange
+import dev.gqlens.core.HistoryImportReport
 import dev.gqlens.core.ObservationContext
 import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.ObservationStore
@@ -32,7 +35,8 @@ class BurpExtender : BurpExtension {
             store,
             surface,
             { event -> sendCapturedEvidenceToRepeater(api, event) },
-            { endpoint, mode -> runSchemaReconOnce(api, endpoint, mode, ownRecon) }
+            { endpoint, mode -> runSchemaReconOnce(api, endpoint, mode, ownRecon) },
+            { limit -> importExistingProxyHistory(api, store, limit) }
         )
         api.userInterface().applyThemeToComponent(panel)
         api.userInterface().registerSuiteTab("GQLens", panel)
@@ -91,6 +95,51 @@ class BurpExtender : BurpExtension {
             }
         })
         api.logging().logToOutput("GQLens: passive evidence and opt-in GraphQL API Surface explorer loaded.")
+    }
+
+    /**
+     * Invoked only by a user's Import button. Burp's existing Proxy history
+     * is queried through Montoya; no HTTP requests are sent. We select a
+     * bounded number of *currently in-scope* entries and never retain raw
+     * requests or responses outside the parsing frame.
+     */
+    private fun importExistingProxyHistory(
+        api: MontoyaApi, store: ObservationStore, limit: Int
+    ): HistoryImportReport {
+        val bound = limit.coerceIn(1, 1000)
+        var admitted = 0
+        val selected = api.proxy().history { item ->
+            if (Thread.currentThread().isInterrupted || admitted >= bound) {
+                false
+            } else {
+                try {
+                    val request = item.finalRequest()
+                    val accepted = request.isInScope() &&
+                        request.body().length() <= 262_144 &&
+                        request.url().length <= 262_144 &&
+                        (!item.hasResponse() || item.originalResponse().body().length() <= 262_144)
+                    if (accepted) admitted++
+                    accepted
+                } catch (_: Exception) { false }
+            }
+        }
+        val entries = selected.asSequence().map { item ->
+            val request = item.finalRequest()
+            val response = if (item.hasResponse()) item.originalResponse() else null
+            HistoricalExchange(
+                proxyId = item.id(),
+                observedAtMillis = item.time().toInstant().toEpochMilli(),
+                inScope = request.isInScope(),
+                method = request.method(),
+                url = request.url(),
+                contentType = request.headerValue("Content-Type"),
+                requestBody = request.bodyToString(),
+                status = response?.statusCode()?.toInt(),
+                responseContentType = response?.headerValue("Content-Type"),
+                responseBody = response?.bodyToString()
+            )
+        }.asIterable()
+        return HistoryImporter(store).import(entries, bound)
     }
 
     /**
