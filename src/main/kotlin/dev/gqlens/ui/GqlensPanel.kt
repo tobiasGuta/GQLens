@@ -173,6 +173,11 @@ class GqlensPanel(
         reset.addActionListener { resetLayout() }
         val clear = JButton("Clear")
         clear.addActionListener {
+            if (bountyPanel.isImporting()) {
+                JOptionPane.showMessageDialog(this,
+                    "Finish or cancel the ongoing history import before clearing this session.")
+                return@addActionListener
+            }
             if (JOptionPane.showConfirmDialog(
                     this, "Clear all observations and evidence in this GQLens session?",
                     "Clear", JOptionPane.YES_NO_OPTION
@@ -180,7 +185,7 @@ class GqlensPanel(
                 store.clear()
                 surfaceStore.clear()
                 research.clear()
-                bountyPanel.refresh()
+                bountyPanel.resetSession()
                 selectedOperation = null
                 selectedEvidence = null
                 refresh()
