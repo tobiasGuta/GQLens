@@ -1,0 +1,95 @@
+name: Publish GQLens v0.2.0-beta.1 from feature branch
+
+on:
+  push:
+    branches:
+      - feat/passive-evidence-explorer
+    paths:
+      - .github/workflows/publish-beta.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gqlens-v0.2.0-beta.1
+  cancel-in-progress: false
+
+jobs:
+  publish-beta:
+    if: github.repository == 'tobiasGuta/GQLens' && github.ref == 'refs/heads/feat/passive-evidence-explorer'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: 0.2.0-beta.1
+      TAG: v0.2.0-beta.1
+    steps:
+      - name: Check out feature branch commit
+        uses: actions/checkout@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Verify unique version, tag and release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ACTUAL="$(mvn --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          test "$ACTUAL" = "$VERSION" || { echo 'Wrong Maven version for this beta release' >&2; exit 1; }
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo 'Refusing to overwrite an existing tag' >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite an existing release' >&2
+            exit 1
+          fi
+      - name: Build and test exact prerelease
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Verify installable JAR and write SHA-256 file
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="target/GQLens-${VERSION}.jar"
+          test -s "$JAR"
+          jar tf "$JAR" | grep -Fx 'burp/BurpExtender.class'
+          if jar tf "$JAR" | grep -q '^burp/api/montoya/'; then
+            echo 'Montoya API must be supplied by Burp, not bundled' >&2
+            exit 1
+          fi
+          (cd target && sha256sum "GQLens-${VERSION}.jar" > "GQLens-${VERSION}.jar.sha256")
+      - name: Publish immutable-by-policy beta tag and release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'NOTES'
+          GQLens v0.2.0-beta.1 — passive evidence explorer (early testing prerelease).
+
+          Download **GQLens-0.2.0-beta.1.jar** below and load in Burp Suite Community via Extensions > Installed > Add > Java.
+
+          - Records only the selected operation from multi-operation GraphQL documents.
+          - Adds passive request/response correlation, HTTP status, and structural result classification.
+          - Displays first/last seen, Burp source tool, session-local message IDs and evidence counts.
+          - Offers manual Repeater handoff for matching original Proxy history entries, without automatically sending.
+          - Includes regression tests and metadata-only privacy safeguards.
+
+          **Beta limitations:** Manual Burp desktop loading, live correlation, and history ID ↔ Repeater handoff are not yet verified. GQLens captures new in-scope traffic only and does not scan, issue probes, or infer vulnerability from response shape.
+
+          The attached SHA-256 file covers the exact released JAR.
+          NOTES
+          gh release create "$TAG" \
+            "target/GQLens-${VERSION}.jar" \
+            "target/GQLens-${VERSION}.jar.sha256" \
+            --target "$GITHUB_SHA" --title "GQLens $TAG" \
+            --notes-file RELEASE_NOTES.md --prerelease
+      - name: Verify release metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json tagName,isPrerelease,assets,url
