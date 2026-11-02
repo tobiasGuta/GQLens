@@ -11,6 +11,7 @@ import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.BorderFactory
 import javax.swing.JSplitPane
 import javax.swing.JTextArea
 import javax.swing.JTree
@@ -24,12 +25,14 @@ import javax.swing.tree.DefaultTreeModel
  */
 class ReconPanel(
     private val selectedEndpoint: () -> String?,
-    private val runSingleRecon: (String, SchemaRecon.Mode) -> SchemaRecon.Result
+    private val runSingleRecon: (String, SchemaRecon.Mode) -> SchemaRecon.Result,
+    private val onResult: (String, SchemaRecon.Result) -> Unit = { _, _ -> }
 ) : JPanel(BorderLayout()) {
     private val busy = AtomicBoolean(false)
     private val endpoint = JLabel("Select an observed operation in the endpoint tree.")
     private val mode = JComboBox(SchemaRecon.Mode.entries.toTypedArray())
     private val launch = JButton("Send 1 introspection query...")
+    private val previewButton = JButton("Preview query")
     private val resultTree = JTree(DefaultTreeModel(DefaultMutableTreeNode("No schema discovered")))
     private val summary = JTextArea(5, 48)
     private val controls = JPanel(FlowLayout(FlowLayout.LEFT))
@@ -40,6 +43,8 @@ class ReconPanel(
         controls.add(JLabel("Discovery depth:"))
         controls.add(mode)
         controls.add(launch)
+        controls.add(previewButton)
+        previewButton.addActionListener { previewQuery() }
         header.add(controls)
         header.add(JLabel(
             "OFF by default · one request per confirmation · no credentials, redirects, mutation execution or field guessing"
@@ -64,6 +69,19 @@ class ReconPanel(
         launch.isEnabled = url != null && !busy.get()
     }
 
+    private fun previewQuery() {
+        val selected = mode.selectedItem as? SchemaRecon.Mode ?: SchemaRecon.Mode.ROOT_FIELDS
+        val query = JTextArea(SchemaRecon.document(selected), 15, 58).apply {
+            isEditable = false
+            lineWrap = false
+            border = BorderFactory.createEmptyBorder(8, 8, 8, 8)
+        }
+        JOptionPane.showMessageDialog(
+            this, JScrollPane(query), "Read-only GraphQL request preview",
+            JOptionPane.INFORMATION_MESSAGE
+        )
+    }
+
     private fun sendOnce() {
         if (!busy.compareAndSet(false, true)) return
         val url = selectedEndpoint()
@@ -73,15 +91,26 @@ class ReconPanel(
             return
         }
         val chosen = mode.selectedItem as? SchemaRecon.Mode ?: SchemaRecon.Mode.ROOT_FIELDS
+        val confirmation = JPanel(BorderLayout(8, 8))
+        val explanation = JTextArea(
+            "Send one unauthenticated POST to: $url\\nMode: ${chosen.title}\\n" +
+            "Scope required. No redirects, retries, mutations or field guessing."
+        , 3, 54).apply {
+            isEditable = false
+            lineWrap = true
+            wrapStyleWord = true
+        }
+        confirmation.add(explanation, BorderLayout.NORTH)
+        val queryPreview = JTextArea(SchemaRecon.document(chosen), 12, 54).apply {
+            isEditable = false
+            lineWrap = false
+        }
+        confirmation.add(JScrollPane(queryPreview), BorderLayout.CENTER)
+        confirmation.add(JLabel("Review the exact request before allowing it."),
+            BorderLayout.SOUTH)
         val decision = JOptionPane.showConfirmDialog(
-            this,
-            "Send exactly ONE unauthenticated POST introspection query to:\n\n$url\n\n" +
-                "Mode: ${chosen.title}\n" +
-                "Requires authorization and active Burp Target scope.\n" +
-                "No redirects, no automatic retries, no mutations, no guessed fields.\n\n" +
-                "Continue?",
-            "Confirm GraphQL reconnaissance", JOptionPane.YES_NO_OPTION,
-            JOptionPane.WARNING_MESSAGE
+            this, confirmation, "Confirm one GraphQL introspection request",
+            JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE
         )
         if (decision != JOptionPane.YES_OPTION) {
             busy.set(false)
@@ -95,6 +124,7 @@ class ReconPanel(
                 SchemaRecon.Result(chosen, null, "REQUEST_FAILED_OR_OUT_OF_SCOPE")
             }
             SwingUtilities.invokeLater {
+                onResult(url, result)
                 showResult(url, result)
                 busy.set(false)
                 setEndpoint(selectedEndpoint())
