@@ -38,7 +38,7 @@ class BountyWorkspacePanelTest {
             assertEquals(listOf("Investigation queue", "Cases & contexts", "History import"),
                 (0 until tabs.tabCount).map { tabs.getTitleAt(it) })
             val table = all(panel).filterIsInstance<JTable>().first {
-                it.columnCount == 4 && it.columnName(0) == "Signal"
+                it.columnCount == 4 && it.getColumnName(0) == "Signal"
             }
             assertEquals(1, table.rowCount)
             assertEquals("RESPONSE ERRORS", table.getValueAt(0, 0))
