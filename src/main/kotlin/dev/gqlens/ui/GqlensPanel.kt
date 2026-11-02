@@ -153,6 +153,7 @@ class GqlensPanel(
                     "Clear", JOptionPane.YES_NO_OPTION
                 ) == JOptionPane.YES_OPTION) {
                 store.clear()
+                surfaceStore.clear()
                 selectedOperation = null
                 selectedEvidence = null
                 refresh()
