@@ -71,6 +71,10 @@ class ObservationStore(private val limit: Int = 2000) {
         return true
     }
 
+    @Synchronized
+    fun hasPending(context: ObservationContext): Boolean =
+        pending.containsKey(correlationKey(context))
+
     /** Correlate responses by Burp's request/response message ID and tool, not URL alone. */
     @Synchronized
     fun recordResponse(
