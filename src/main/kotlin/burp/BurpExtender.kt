@@ -2,6 +2,10 @@ package burp
 
 import burp.api.montoya.BurpExtension
 import burp.api.montoya.MontoyaApi
+import burp.api.montoya.http.RedirectionMode
+import burp.api.montoya.http.RequestOptions
+import burp.api.montoya.http.message.requests.HttpRequest
+import dev.gqlens.core.SchemaRecon
 import burp.api.montoya.http.handler.HttpHandler
 import burp.api.montoya.http.handler.HttpRequestToBeSent
 import burp.api.montoya.http.handler.HttpResponseReceived
@@ -14,12 +18,16 @@ import dev.gqlens.core.ObservationStore
 import dev.gqlens.core.ResponseAnalyzer
 import dev.gqlens.ui.GqlensPanel
 
-/** Passive Burp Suite Community extension. It never issues or mutates HTTP traffic. */
+/** Passive capture plus explicitly confirmed, single-request introspection in Community Edition. */
 class BurpExtender : BurpExtension {
     override fun initialize(api: MontoyaApi) {
         api.extension().setName("GQLens")
         val store = ObservationStore()
-        val panel = GqlensPanel(store) { event -> sendCapturedEvidenceToRepeater(api, event) }
+        val panel = GqlensPanel(
+            store,
+            { event -> sendCapturedEvidenceToRepeater(api, event) },
+            { endpoint, mode -> runSchemaReconOnce(api, endpoint, mode) }
+        )
         api.userInterface().applyThemeToComponent(panel)
         api.userInterface().registerSuiteTab("GQLens", panel)
 
@@ -101,4 +109,45 @@ class BurpExtender : BurpExtension {
             "Could not resolve the matching Proxy request. No request was sent."
         }
     }
+    /**
+     * No background discovery. This method is called only after the user explicitly
+     * confirms a single introspection query in the UI. No captured auth is replayed.
+     * Request is freshly built, scope-checked, redirect-disabled and time-bounded.
+     */
+    private fun runSchemaReconOnce(
+        api: MontoyaApi, endpoint: String, mode: SchemaRecon.Mode
+    ): SchemaRecon.Result {
+        return try {
+            val uri = java.net.URI(endpoint)
+            if ((uri.scheme != "http" && uri.scheme != "https") ||
+                uri.host.isNullOrBlank() || uri.rawUserInfo != null ||
+                uri.rawQuery != null || uri.rawFragment != null) {
+                return SchemaRecon.Result(mode, null, "INVALID_ENDPOINT")
+            }
+            val request = HttpRequest.httpRequestFromUrl(endpoint)
+                .withMethod("POST")
+                .withHeader("Content-Type", "application/json")
+                .withHeader("Accept", "application/graphql-response+json, application/json;q=0.9")
+                .withBody(SchemaRecon.requestBody(mode))
+            if (!request.isInScope()) {
+                return SchemaRecon.Result(mode, null, "OUT_OF_SCOPE")
+            }
+            val options = RequestOptions.requestOptions()
+                .withRedirectionMode(RedirectionMode.NEVER)
+                .withResponseTimeout(10_000)
+                .withUpstreamTLSVerification()
+            val exchange = api.http().sendRequest(request, options)
+            val response = if (exchange.hasResponse()) exchange.response() else null
+            if (response == null) {
+                SchemaRecon.Result(mode, null, "NO_RESPONSE")
+            } else if (response.body().length() > SchemaRecon.MAX_RESPONSE_BYTES) {
+                SchemaRecon.Result(mode, response.statusCode().toInt(), "RESPONSE_TOO_LARGE")
+            } else {
+                SchemaRecon.parse(mode, response.statusCode().toInt(), response.bodyToString())
+            }
+        } catch (_: Exception) {
+            SchemaRecon.Result(mode, null, "REQUEST_FAILED")
+        }
+    }
+
 }
