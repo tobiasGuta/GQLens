@@ -149,7 +149,7 @@ class GqlensPanel(
 
     private fun showDetails() {
         val row = selectedRow()
-        toRepeater.isEnabled = row?.lastTool == "PROXY" && row.lastMessageId != null
+        toRepeater.isEnabled = row != null && row.lastTool == "PROXY" && row.lastMessageId != null
         if (row == null) {
             details.text = "Select a requested operation to inspect its field paths and session-local evidence reference."
             return
