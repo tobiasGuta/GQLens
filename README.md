@@ -86,10 +86,24 @@ This prerelease builds on beta.4 and improves the schema view for manual GraphQL
 
 **Limits:** A generated document is a manual review aid, not proof of access, authorization or even an executable operation without actual variable values. Deep or restricted introspection responses may be incomplete. Interactive Burp Community visual testing is still needed before merging.
 
+## v0.2.0-beta.6: Schema Investigator UI and safer previews
+
+This branch upgrades the native Burp GraphQL schema investigator while preserving the previous passive and opt-in reconnaissance workflows.
+
+- **Compact schema tree:** Show concise root/member names rather than unscannable long argument strings. Hovering over fields shows full introspected signatures. Schema types are grouped by their actual GraphQL kind (objects, enums, interfaces, scalars, etc.); type groups start collapsed.
+- **Structured field inspector:** Full return types, requested/declared classification, request evidence counts and a readable table of required/optional arguments live in the details pane.
+- **Code preview:** The Query builder now formats GraphQL across lines and includes a read-only, numbered, syntax-emphasized code view with horizontal scrolling and Burp-native theme colors.
+- **Two manual copy options:** Copy the GraphQL document, or a correctly escaped JSON request body with `variables: {}`. The JSON deliberately leaves all required variable values empty; they must be supplied by the operator.
+- **Fail-closed completeness:** A missing `args` array, missing argument `defaultValue` metadata, malformed/oversized arguments or a truncated schema snapshot disables draft generation instead of silently omitting potentially required inputs. QUERY roots only: mutations remain excluded.
+- **Regression tests:** Headless Swing grouping, tree names, code preview and JSON mode; GraphQL parser type/argument completeness and generated-query formatting and syntax.
+- **No additional network behavior:** Generation/copy actions never contact an endpoint or invoke Burp Repeater. Only the pre-existing explicitly approved, one-request introspection workflow performs optional active reconnaissance.
+
+**Desktop testing remains necessary:** CI verifies source, tests and packaging but not the exact rendered layout in your running Burp Suite Community Edition.
+
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.5 prerelease** and download **GQLens-0.2.0-beta.5.jar** from **Assets** (not the source archives).
+2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.6 prerelease** and download **GQLens-0.2.0-beta.6.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
@@ -101,7 +115,7 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.5.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.6.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 

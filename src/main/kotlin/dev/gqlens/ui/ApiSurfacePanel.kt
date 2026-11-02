@@ -56,20 +56,15 @@ class ApiSurfacePanel(
         val group: String,
         val field: SurfaceField
     ) {
-        override fun toString(): String = (field.signature?.display ?: field.name) + "   ·   " + when (field.status) {
-            SurfaceStatus.DECLARED_AND_REQUESTED -> "Declared + requested"
-            SurfaceStatus.DECLARED_ONLY -> "Declared"
-            SurfaceStatus.REQUESTED_ONLY -> "Requested only"
-            SurfaceStatus.META_FIELD_REQUESTED -> "GraphQL meta-field"
-        }
+        override fun toString(): String = field.name
     }
     private data class TypeNode(val type: SurfaceType) {
-        override fun toString(): String = type.name + "   ·   " + type.kind
+        override fun toString(): String = type.name
     }
     private data class TypeFieldNode(
         val type: String, val field: String, val signature: SchemaRecon.FieldSignature?
     ) {
-        override fun toString(): String = signature?.display ?: field
+        override fun toString(): String = field
     }
 
     private val preferences = Preferences.userNodeForPackage(ApiSurfacePanel::class.java)
@@ -84,14 +79,13 @@ class ApiSurfacePanel(
         "Declared only", "Requested only", "Meta-fields"))
     private val root = DefaultMutableTreeNode("API Surface")
     private val tree = JTree(DefaultTreeModel(root))
-    private val detail = textArea()
+    private val detailsPanel = SchemaDetailsPanel()
     private val changes = textArea()
-    private val builderText = textArea().apply {
-        font = Font(Font.MONOSPACED, Font.PLAIN, font.size + 1)
-        text = "Select an introspected QUERY root field to generate a read-only document."
-    }
-    private val builderNotes = JLabel("Generation only — never sends a request")
-    private val copyDraft = JButton("Copy query to clipboard").apply { isEnabled = false }
+    private val builderPreview = CodePreviewPanel()
+    private val builderFormat = JComboBox(arrayOf("GraphQL", "JSON request body"))
+    private val builderNotes = JLabel("Local preview only · never sends requests")
+    private val copyDraft = JButton("Copy GraphQL").apply { isEnabled = false }
+    private val copyJson = JButton("Copy JSON body").apply { isEnabled = false }
     private var generatedDraft: QueryDraftBuilder.Draft? = null
     private val tabs = JTabbedPane()
     private val split: JSplitPane
@@ -139,6 +133,13 @@ class ApiSurfacePanel(
                     tree, value, selected, expanded, leaf, row, hasFocus
                 )
                 val node = (value as? DefaultMutableTreeNode)?.userObject
+                toolTipText = when (node) {
+                    is FieldNode -> (node.field.signature?.display ?: node.field.name) +
+                        " — " + node.field.status.name.replace('_', ' ')
+                    is TypeFieldNode -> node.signature?.display ?: node.field
+                    is TypeNode -> node.type.kind + " " + node.type.name
+                    else -> null
+                }
                 if (!selected && node is FieldNode) {
                     if (node.field.status == SurfaceStatus.DECLARED_ONLY)
                         foreground = UIManager.getColor("Label.disabledForeground")
@@ -151,30 +152,24 @@ class ApiSurfacePanel(
             }
         }
         tree.addTreeSelectionListener { showSelection() }
-        detail.text = "Schema declarations and observed requests will appear here.\n\n" +
-            "Declared does not mean accessible. Requested does not mean executed."
+        detailsPanel.placeholder(
+            "Declared does not mean accessible. Requested does not mean executed.")
         changes.text = "Run a permitted introspection query to record a schema snapshot."
-        tabs.addTab("Field details", JScrollPane(detail))
+        tabs.addTab("Field details", detailsPanel)
         tabs.addTab("Schema changes", JScrollPane(changes))
         val builderPanel = JPanel(BorderLayout(8, 8))
         builderPanel.border = BorderFactory.createEmptyBorder(6, 6, 6, 6)
         val builderControls = JPanel(FlowLayout(FlowLayout.LEFT, 8, 2))
+        builderControls.add(JLabel("Preview"))
+        builderControls.add(builderFormat)
         builderControls.add(copyDraft)
-        builderControls.add(builderNotes)
+        builderControls.add(copyJson)
         builderPanel.add(builderControls, BorderLayout.NORTH)
-        builderPanel.add(JScrollPane(builderText), BorderLayout.CENTER)
-        copyDraft.addActionListener {
-            generatedDraft?.let { draft ->
-                try {
-                    Toolkit.getDefaultToolkit().systemClipboard.setContents(
-                        StringSelection(draft.document), null
-                    )
-                    builderNotes.text = "Query copied; no HTTP request sent."
-                } catch (_: Exception) {
-                    builderNotes.text = "Clipboard unavailable."
-                }
-            }
-        }
+        builderPanel.add(builderPreview, BorderLayout.CENTER)
+        builderPanel.add(builderNotes, BorderLayout.SOUTH)
+        builderFormat.addActionListener { renderDraft() }
+        copyDraft.addActionListener { copyDraftToClipboard(false) }
+        copyJson.addActionListener { copyDraftToClipboard(true) }
         tabs.addTab("Query builder", builderPanel)
         split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, JScrollPane(tree), tabs)
         split.resizeWeight = 0.55
@@ -229,7 +224,7 @@ class ApiSurfacePanel(
         typesMetric.text = (current?.types?.size ?: 0).toString()
 
         val previousSelection = (tree.lastSelectedPathComponent as? DefaultMutableTreeNode)
-            ?.userObject?.toString()
+            ?.userObject?.let(::nodeKey)
         root.removeAllChildren()
         var restore: TreePath? = null
         if (current != null) {
@@ -249,38 +244,57 @@ class ApiSurfacePanel(
                 for (field in matching) {
                     val node = DefaultMutableTreeNode(FieldNode(group.kind, field))
                     branch.add(node)
-                    if (node.userObject.toString() == previousSelection) restore = TreePath(node.path)
+                    if (nodeKey(node.userObject) == previousSelection) restore = TreePath(node.path)
                 }
             }
-            if (filter.selectedIndex == 0 || filter.selectedIndex == 1) {
+            if (filter.selectedIndex == 0) {
                 val typeBranch = DefaultMutableTreeNode("Schema types   (" + current.types.size + ")")
-                for (type in current.types) {
-                    val fields = type.fields.filter { it.contains(needle, true) }
-                    if (needle.isNotBlank() && !type.name.contains(needle, true) && fields.isEmpty()) continue
-                    val item = DefaultMutableTreeNode(TypeNode(type))
-                    typeBranch.add(item)
-                    for (field in if (needle.isNotBlank() && !type.name.contains(needle, true))
-                        fields else type.fields) {
-                        val child = DefaultMutableTreeNode(TypeFieldNode(
-                            type.name, field, type.signatures.firstOrNull { it.name == field }
-                        ))
-                        item.add(child)
-                        if (child.userObject.toString() == previousSelection) restore = TreePath(child.path)
+                for ((kind, typeSet) in current.types.groupBy { it.kind }.toSortedMap()) {
+                    val byKind = DefaultMutableTreeNode(typeGroupLabel(kind) + "   (" + typeSet.size + ")")
+                    for (type in typeSet.sortedBy { it.name }) {
+                        val fields = type.fields.filter { it.contains(needle, true) }
+                        if (needle.isNotBlank() &&
+                            !type.name.contains(needle, true) && fields.isEmpty()) continue
+                        val typeNode = DefaultMutableTreeNode(TypeNode(type))
+                        byKind.add(typeNode)
+                        for (field in if (needle.isNotBlank() && !type.name.contains(needle, true))
+                            fields else type.fields) {
+                            val child = DefaultMutableTreeNode(TypeFieldNode(
+                                type.name, field, type.signatures.firstOrNull { it.name == field }
+                            ))
+                            typeNode.add(child)
+                            if (nodeKey(child.userObject) == previousSelection) restore = TreePath(child.path)
+                        }
+                        if (nodeKey(typeNode.userObject) == previousSelection) restore = TreePath(typeNode.path)
                     }
+                    if (byKind.childCount > 0) typeBranch.add(byKind)
                 }
                 if (typeBranch.childCount > 0) root.add(typeBranch)
             }
         }
         (tree.model as DefaultTreeModel).reload()
-        for (i in 0 until minOf(tree.rowCount, 60)) tree.expandRow(i)
+        // Expand the root operation groups, but leave large type categories
+        // collapsed until chosen. Search expands matching types for quick discovery.
+        for (i in 0 until root.childCount) {
+            val child = root.getChildAt(i) as DefaultMutableTreeNode
+            tree.expandPath(TreePath(child.path))
+            if (search.text.isNotBlank() && child.userObject.toString().startsWith("Schema types")) {
+                for (kindIndex in 0 until child.childCount) {
+                    val group = child.getChildAt(kindIndex) as DefaultMutableTreeNode
+                    tree.expandPath(TreePath(group.path))
+                    for (typeIndex in 0 until minOf(group.childCount, 30)) {
+                        val typeNode = group.getChildAt(typeIndex) as DefaultMutableTreeNode
+                        tree.expandPath(TreePath(typeNode.path))
+                    }
+                }
+            }
+        }
         if (restore != null) tree.selectionPath = restore
         showChanges(current?.changes)
         if (tree.selectionPath == null) {
             updateDraft(null)
-            detail.text = "Select a field to see its provenance.\n\n" +
-                "Requested fields are parsed from captured GraphQL documents; " +
-                "they may be skipped by directives or rejected by the server.\n\n" +
-                "Schema declarations do not establish authorization or successful execution."
+            detailsPanel.placeholder(
+                "Requested selections may be skipped or rejected; declarations do not prove authorization.")
         }
     }
 
@@ -292,105 +306,74 @@ class ApiSurfacePanel(
         else -> true
     }
 
+    private fun nodeKey(item: Any?): String = when (item) {
+        is FieldNode -> "root:" + item.group + ":" + item.field.name
+        is TypeNode -> "type:" + item.type.kind + ":" + item.type.name
+        is TypeFieldNode -> "member:" + item.type + ":" + item.field
+        else -> item.toString()
+    }
+
+    private fun typeGroupLabel(kind: String): String =
+        kind.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() } + " types"
+
     private fun showSelection() {
         val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return
         when (val value = node.userObject) {
             is FieldNode -> {
-                val field = value.field
-                updateDraft(QueryDraftBuilder.build(value.group, field.signature))
-                detail.text = buildString {
-                    appendLine(value.group + "  /  " + field.name)
-                    appendLine()
-                    appendLine("Evidence: " + value.toString().substringAfter("·").trim())
-                    appendLine("Captured requests: " + field.requests)
-                    appendLine()
-                    field.signature?.let { signature ->
-                        appendLine("DECLARED GRAPHQL SIGNATURE")
-                        appendLine(signature.display)
-                        appendLine("Return type: " + (signature.type?.display ?: "not reported"))
-                        if (signature.args.isNotEmpty()) {
-                            appendLine()
-                            appendLine("ARGUMENTS")
-                            signature.args.forEach { arg ->
-                                appendLine(arg.name + " : " + arg.type.display +
-                                    if (arg.required) "     Required" else "     Optional / default")
-                            }
-                        }
-                        appendLine()
-                    }
-                    appendLine(when (field.status) {
-                        SurfaceStatus.DECLARED_AND_REQUESTED ->
-                            "Declared by server and requested in captured traffic."
-                        SurfaceStatus.DECLARED_ONLY ->
-                            "Declared by server, not requested in this capture window."
-                        SurfaceStatus.REQUESTED_ONLY ->
-                            "Requested in traffic, not matched to this schema snapshot."
-                        SurfaceStatus.META_FIELD_REQUESTED ->
-                            "Implicit GraphQL meta-field, not an ordinary schema member."
-                    })
-                    appendLine()
-                    appendLine("No execution, successful access or authorization is implied.")
-                }
+                detailsPanel.showRoot(value.group, value.field)
+                updateDraft(QueryDraftBuilder.build(value.group, value.field.signature))
             }
             is TypeNode -> {
+                detailsPanel.showType(value.type)
                 updateDraft(null)
-                detail.text = buildString {
-                    appendLine("SCHEMA TYPE")
-                    appendLine(value.type.name + "  [" + value.type.kind + "]")
-                    appendLine("Declared members: " + value.type.fields.size)
-                    appendLine()
-                    appendLine("Members are declarations, not observed access claims.")
-                }
             }
             is TypeFieldNode -> {
+                detailsPanel.showMember(value.type, value.field, value.signature)
                 updateDraft(null)
-                detail.text = buildString {
-                    appendLine("SCHEMA MEMBER")
-                    appendLine(value.type + "." + value.field)
-                    value.signature?.let { signature ->
-                        appendLine()
-                        appendLine(signature.display)
-                        appendLine("Return type: " + (signature.type?.display ?: "unavailable"))
-                        if (signature.args.isNotEmpty()) {
-                            appendLine()
-                            appendLine("ARGUMENTS")
-                            signature.args.forEach { arg ->
-                                appendLine(arg.name + ": " + arg.type.display +
-                                    if (arg.required) "     Required" else "     Optional / default")
-                            }
-                        }
-                    }
-                    appendLine()
-                    appendLine("Declared only. Nested execution is not inferred by name.")
-                }
             }
             else -> {
+                detailsPanel.placeholder("Choose a root field or schema member to inspect its type.")
                 updateDraft(null)
-                detail.text = value?.toString() ?: ""
             }
         }
-        detail.caretPosition = 0
     }
 
     private fun updateDraft(draft: QueryDraftBuilder.Draft?) {
         generatedDraft = draft
         copyDraft.isEnabled = draft != null
-        builderNotes.text = if (draft == null)
-            "QUERY roots with complete signatures only — no execution"
-        else "Generated locally · no request sent"
-        builderText.text = if (draft == null) {
-            "Select a QUERY root with a known return type.\n" +
-                "Mutations are intentionally excluded from generation."
-        } else buildString {
-            appendLine(draft.document)
-            appendLine()
-            appendLine("# " + draft.note)
-            for (variable in draft.requiredVariables) {
-                appendLine("# Required variable: " + variable.name + ": " + variable.type +
-                    " (value not generated)")
-            }
+        copyJson.isEnabled = draft != null
+        renderDraft()
+    }
+
+    private fun renderDraft() {
+        val draft = generatedDraft
+        val json = builderFormat.selectedIndex == 1
+        val display = if (draft == null)
+            "Select a QUERY root with complete argument and return-type metadata.\n" +
+                "No inputs or mutations are automatically generated."
+        else if (json) draft.jsonBody() else draft.document
+        builderPreview.showCode(display,
+            if (json) CodePreviewPanel.Language.JSON else CodePreviewPanel.Language.GRAPHQL)
+        builderNotes.text = when {
+            draft == null -> "Incomplete schema fields cannot generate requests · no execution"
+            draft.requiredVariables.isNotEmpty() ->
+                "Required variables: " + draft.requiredVariables.joinToString(", ") {
+                    it.name + ": " + it.type
+                } + " — values must be supplied manually"
+            else -> "Generated locally · no HTTP requests sent"
         }
-        builderText.caretPosition = 0
+    }
+
+    private fun copyDraftToClipboard(asJson: Boolean) {
+        val draft = generatedDraft ?: return
+        val content = if (asJson) draft.jsonBody() else draft.document
+        try {
+            Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(content), null)
+            builderNotes.text = (if (asJson) "JSON body" else "GraphQL document") +
+                " copied · nothing was sent"
+        } catch (_: Exception) {
+            builderNotes.text = "Clipboard unavailable; preview remains readable"
+        }
     }
 
     private fun showChanges(delta: SchemaDelta?) {

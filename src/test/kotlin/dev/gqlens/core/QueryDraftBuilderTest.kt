@@ -14,7 +14,7 @@ class QueryDraftBuilderTest {
             listOf(SchemaRecon.ArgumentSignature("id",
                 SchemaRecon.TypeSignature("ID!", "ID", "SCALAR"), false)))
         val draft = QueryDraftBuilder.build("QUERY", field)!!
-        assertEquals("query GQLensPreview(\$id: ID!) { node(id: \$id) { __typename } }", draft.document)
+        assertEquals("query GQLensPreview(\$id: ID!) {\\n  node(id: \$id) {\\n    __typename\\n  }\\n}".replace("\\n", "\n"), draft.document)
         assertEquals("id", draft.requiredVariables.single().name)
         Parser().parseDocument(draft.document)
         assertFalse(draft.document.contains("mutation"))
@@ -25,7 +25,7 @@ class QueryDraftBuilderTest {
         for (kind in listOf("SCALAR", "ENUM")) {
             val draft = QueryDraftBuilder.build("QUERY",
                 SchemaRecon.FieldSignature("status", type("String", kind)))!!
-            assertEquals("query GQLensPreview { status }", draft.document)
+            assertEquals("query GQLensPreview {\\n  status\\n}".replace("\\n", "\n"), draft.document)
             Parser().parseDocument(draft.document)
         }
     }
@@ -40,7 +40,7 @@ class QueryDraftBuilderTest {
         ))
         val draft = QueryDraftBuilder.build("QUERY", field)!!
         assertTrue(draft.requiredVariables.isEmpty())
-        assertEquals("query GQLensPreview { search { __typename } }", draft.document)
+        assertEquals("query GQLensPreview {\\n  search {\\n    __typename\\n  }\\n}".replace("\\n", "\n"), draft.document)
     }
 
     @Test
@@ -51,4 +51,30 @@ class QueryDraftBuilderTest {
         assertNull(QueryDraftBuilder.build("QUERY",
             SchemaRecon.FieldSignature("bad name", type("String", "SCALAR"))))
     }
+    @Test
+    fun rejectsIncompleteArgumentMetadataEvenWhenReturnTypeExists() {
+        val incomplete = SchemaRecon.FieldSignature(
+            "organization", type("Organization", "OBJECT"),
+            emptyList(), complete = false
+        )
+        assertNull(QueryDraftBuilder.build("QUERY", incomplete))
+        assertNull(QueryDraftBuilder.build("QUERY", incomplete.copy(
+            args = listOf(SchemaRecon.ArgumentSignature("slug",
+                SchemaRecon.TypeSignature("String!", "String", "SCALAR"), false))
+        )))
+    }
+
+    @Test
+    fun jsonRequestBodyLeavesVariableValuesEmptyAndEscapesGraphqlDocument() {
+        val draft = QueryDraftBuilder.build("QUERY",
+            SchemaRecon.FieldSignature("node", type("Node", "OBJECT"),
+                listOf(SchemaRecon.ArgumentSignature("id",
+                    SchemaRecon.TypeSignature("ID!", "ID", "SCALAR"), false))))!!
+        val parsed = com.fasterxml.jackson.databind.ObjectMapper().readTree(draft.jsonBody())
+        assertEquals(draft.document, parsed.path("query").asText())
+        assertTrue(parsed.path("variables").isObject)
+        assertEquals(0, parsed.path("variables").size())
+        assertFalse(draft.jsonBody().contains("token"))
+    }
+
 }
