@@ -25,7 +25,7 @@ class ApiSurfaceStoreTest {
         )
         val report = store.report(endpoint, rows)
         assertEquals(2, report.declaredFields)
-        assertEquals(3, report.requestedFields)
+        assertEquals(2, report.requestedFields)
         assertEquals(1, report.matchedFields)
         val fields = report.roots.single().fields.associateBy { it.name }
         assertEquals(SurfaceStatus.DECLARED_AND_REQUESTED, fields.getValue("me").status)

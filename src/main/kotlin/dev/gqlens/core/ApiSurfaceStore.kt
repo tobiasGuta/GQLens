@@ -11,7 +11,8 @@ enum class SurfaceStatus {
 data class SurfaceField(
     val name: String,
     val status: SurfaceStatus,
-    val requests: Int
+    val requests: Int,
+    val signature: SchemaRecon.FieldSignature? = null
 )
 data class SurfaceRoot(
     val kind: String,
@@ -19,7 +20,10 @@ data class SurfaceRoot(
     val fields: List<SurfaceField>,
     val hasDeclarations: Boolean
 )
-data class SurfaceType(val name: String, val kind: String, val fields: List<String>)
+data class SurfaceType(
+    val name: String, val kind: String, val fields: List<String>,
+    val signatures: List<SchemaRecon.FieldSignature> = emptyList()
+)
 data class SchemaDelta(
     val mode: SchemaRecon.Mode,
     val previousAtMillis: Long,
@@ -120,6 +124,9 @@ class ApiSurfaceStore(private val maxEndpoints: Int = 64) {
                 typeByName[name]?.fields ?: rootByName[name]?.fields.orEmpty()
             } else emptyList()
             val declaredSet = declared.toSet()
+            val signatures = if (name != null) {
+                (typeByName[name]?.details ?: rootByName[name]?.details).orEmpty().associateBy { it.name }
+            } else emptyMap()
             val requested = requestedByKind[kind].orEmpty()
             val fields = (declared + requested.keys).distinct().sorted().map { field ->
                 val count = requested[field] ?: 0
@@ -130,13 +137,13 @@ class ApiSurfaceStore(private val maxEndpoints: Int = 64) {
                     field in declaredSet -> SurfaceStatus.DECLARED_ONLY
                     else -> SurfaceStatus.REQUESTED_ONLY
                 }
-                SurfaceField(field, status, count)
+                SurfaceField(field, status, count, signatures[field])
             }
             SurfaceRoot(kind, name, fields, known)
         }
         val declaredTypes = types?.types.orEmpty()
             .filterNot { it.name.startsWith("__") }
-            .map { SurfaceType(it.name, it.kind, it.fields) }
+            .map { SurfaceType(it.name, it.kind, it.fields, it.details) }
             .sortedWith(compareBy({ it.kind }, { it.name }))
         val version = listOfNotNull(rootVersion, typesVersion).maxByOrNull { it.whenMillis }
         val latestDiff = if (typesVersion != null && history.previousTypes != null) {
@@ -149,7 +156,8 @@ class ApiSurfaceStore(private val maxEndpoints: Int = 64) {
             rootGroups.sumOf { group -> group.fields.count {
                 it.status == SurfaceStatus.DECLARED_ONLY || it.status == SurfaceStatus.DECLARED_AND_REQUESTED
             } },
-            rootGroups.sumOf { group -> group.fields.count { it.requests > 0 } },
+            rootGroups.sumOf { group -> group.fields.count { it.requests > 0 &&
+                it.status != SurfaceStatus.META_FIELD_REQUESTED } },
             rootGroups.sumOf { group -> group.fields.count { it.status == SurfaceStatus.DECLARED_AND_REQUESTED } },
             roots?.truncated == true || types?.truncated == true,
             latestDiff

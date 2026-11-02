@@ -19,13 +19,26 @@ object SchemaRecon {
     private const val MAX_FIELDS_PER_TYPE = 128
     private const val MAX_TOTAL_FIELDS = 4096
 
-    /** These are GraphQL spec introspection fields, not guessed application fields. */
+    // Introspection uses the spec's __Type.kind/name/ofType modifiers. Depth is
+    // bounded (rather than querying a recursive fragment, which GraphQL prohibits).
+    private fun typeRefSelection(depth: Int): String =
+        "kind name" + if (depth <= 0) "" else
+            " ofType { " + typeRefSelection(depth - 1) + " }"
+
+    private val typeRef = typeRefSelection(7)
+    private val fieldSelection = """
+        name
+        type { $typeRef }
+        args { name defaultValue type { $typeRef } }
+    """.trimIndent()
+
+    /** No guessed application-specific names or non-introspection execution. */
     private val rootQuery = """
         query GQLensSchemaRoots {
           __schema {
-            queryType { name fields { name } }
-            mutationType { name fields { name } }
-            subscriptionType { name fields { name } }
+            queryType { name fields { $fieldSelection } }
+            mutationType { name fields { $fieldSelection } }
+            subscriptionType { name fields { $fieldSelection } }
           }
         }
     """.trimIndent()
@@ -39,8 +52,8 @@ object SchemaRecon {
             types {
               name
               kind
-              fields(includeDeprecated: true) { name }
-              inputFields { name }
+              fields(includeDeprecated: true) { $fieldSelection }
+              inputFields { name type { $typeRef } }
               enumValues(includeDeprecated: true) { name }
             }
           }
@@ -55,7 +68,24 @@ object SchemaRecon {
     fun requestBody(mode: Mode): String =
         mapper.writeValueAsString(mapOf("query" to document(mode)))
 
-    data class TypeSummary(val name: String, val kind: String, val fields: List<String>)
+    data class TypeSignature(val display: String, val namedType: String, val namedKind: String)
+    data class ArgumentSignature(val name: String, val type: TypeSignature, val hasDefault: Boolean) {
+        val required: Boolean get() = type.display.endsWith("!") && !hasDefault
+    }
+    data class FieldSignature(
+        val name: String, val type: TypeSignature?, val args: List<ArgumentSignature> = emptyList()
+    ) {
+        val display: String get() = name +
+            (if (args.isNotEmpty()) args.joinToString(", ", "(", ")") {
+                it.name + ": " + it.type.display +
+                    if (it.hasDefault) " = default" else ""
+            } else "") +
+            (type?.let { ": " + it.display } ?: "")
+    }
+    data class TypeSummary(
+        val name: String, val kind: String, val fields: List<String>,
+        val details: List<FieldSignature> = emptyList()
+    )
     data class Result(
         val mode: Mode,
         val httpStatus: Int?,
@@ -83,7 +113,56 @@ object SchemaRecon {
         }
 
         var fields = 0
+        var arguments = 0
         var truncated = false
+
+        fun typeOf(node: JsonNode): TypeSignature? {
+            if (!node.isObject) return null
+            val wrappers = ArrayList<String>()
+            var item = node
+            repeat(9) {
+                val kind = item.path("kind").asText()
+                when (kind) {
+                    "NON_NULL", "LIST" -> {
+                        wrappers.add(kind)
+                        item = item.path("ofType")
+                    }
+                    "SCALAR", "ENUM", "OBJECT", "INTERFACE", "UNION", "INPUT_OBJECT" -> {
+                        val name = item.path("name").takeIf { it.isTextual }?.asText() ?: return null
+                        if (!name.matches(Regex("[_A-Za-z][_0-9A-Za-z]{0,127}"))) return null
+                        var printed = name
+                        for (wrapper in wrappers.asReversed()) {
+                            printed = if (wrapper == "LIST") "[$printed]" else "$printed!"
+                        }
+                        return TypeSignature(printed, name, kind)
+                    }
+                    else -> return null
+                }
+            }
+            truncated = true
+            return null
+        }
+
+        fun signature(entry: JsonNode): FieldSignature? {
+            val name = entry.path("name").takeIf { it.isTextual }?.asText() ?: return null
+            val args = ArrayList<ArgumentSignature>()
+            val allArgs = entry.path("args")
+            if (allArgs.isArray) {
+                for (arg in allArgs) {
+                    if (args.size >= 32 || arguments >= 8192) {
+                        truncated = true
+                        break
+                    }
+                    val argName = arg.path("name").takeIf { it.isTextual }?.asText() ?: continue
+                    if (!argName.matches(Regex("[_A-Za-z][_0-9A-Za-z]{0,127}"))) continue
+                    val argType = typeOf(arg.path("type")) ?: continue
+                    args.add(ArgumentSignature(argName, argType, !arg.path("defaultValue").isNull &&
+                        !arg.path("defaultValue").isMissingNode))
+                    arguments++
+                }
+            }
+            return FieldSignature(name, typeOf(entry.path("type")), args)
+        }
 
         fun gather(node: JsonNode): List<String> {
             if (!node.isArray) return emptyList()
@@ -112,7 +191,13 @@ object SchemaRecon {
             val names = gather(node.path("fields")) +
                 gather(node.path("inputFields")) +
                 (if (includeEnums) gather(node.path("enumValues")) else emptyList())
-            return TypeSummary(name, kind.take(32), names.distinct())
+            val named = names.toSet()
+            val entries = sequenceOf(node.path("fields"), node.path("inputFields"))
+                .filter { it.isArray }.flatMap { it.asSequence() }
+            val details = entries.mapNotNull { entry ->
+                if (entry.path("name").asText() in named) signature(entry) else null
+            }.take(MAX_FIELDS_PER_TYPE * 2).toList()
+            return TypeSummary(name, kind.take(32), names.distinct(), details)
         }
 
         val rootTypeNames = linkedMapOf<String, String>()

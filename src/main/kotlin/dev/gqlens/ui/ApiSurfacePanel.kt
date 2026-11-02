@@ -2,6 +2,8 @@ package dev.gqlens.ui
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import dev.gqlens.core.ApiSurfaceStore
+import dev.gqlens.core.QueryDraftBuilder
+import dev.gqlens.core.SchemaRecon
 import dev.gqlens.core.ObservationRow
 import dev.gqlens.core.SchemaDelta
 import dev.gqlens.core.SurfaceField
@@ -12,6 +14,8 @@ import dev.gqlens.core.SurfaceType
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
 import java.awt.Font
 import java.awt.GridLayout
 import java.nio.charset.StandardCharsets
@@ -32,6 +36,7 @@ import javax.swing.JTextArea
 import javax.swing.JTextField
 import javax.swing.JTree
 import javax.swing.SwingUtilities
+import javax.swing.UIManager
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import javax.swing.tree.DefaultMutableTreeNode
@@ -51,7 +56,7 @@ class ApiSurfacePanel(
         val group: String,
         val field: SurfaceField
     ) {
-        override fun toString(): String = field.name + "   ·   " + when (field.status) {
+        override fun toString(): String = (field.signature?.display ?: field.name) + "   ·   " + when (field.status) {
             SurfaceStatus.DECLARED_AND_REQUESTED -> "Declared + requested"
             SurfaceStatus.DECLARED_ONLY -> "Declared"
             SurfaceStatus.REQUESTED_ONLY -> "Requested only"
@@ -61,8 +66,10 @@ class ApiSurfacePanel(
     private data class TypeNode(val type: SurfaceType) {
         override fun toString(): String = type.name + "   ·   " + type.kind
     }
-    private data class TypeFieldNode(val type: String, val field: String) {
-        override fun toString(): String = field
+    private data class TypeFieldNode(
+        val type: String, val field: String, val signature: SchemaRecon.FieldSignature?
+    ) {
+        override fun toString(): String = signature?.display ?: field
     }
 
     private val preferences = Preferences.userNodeForPackage(ApiSurfacePanel::class.java)
@@ -79,6 +86,13 @@ class ApiSurfacePanel(
     private val tree = JTree(DefaultTreeModel(root))
     private val detail = textArea()
     private val changes = textArea()
+    private val builderText = textArea().apply {
+        font = Font(Font.MONOSPACED, Font.PLAIN, font.size + 1)
+        text = "Select an introspected QUERY root field to generate a read-only document."
+    }
+    private val builderNotes = JLabel("Generation only — never sends a request")
+    private val copyDraft = JButton("Copy query to clipboard").apply { isEnabled = false }
+    private var generatedDraft: QueryDraftBuilder.Draft? = null
     private val tabs = JTabbedPane()
     private val split: JSplitPane
     private var endpoint: String? = null
@@ -113,6 +127,9 @@ class ApiSurfacePanel(
 
         tree.isRootVisible = false
         tree.showsRootHandles = true
+        tree.font = tree.font.deriveFont(tree.font.size2D + 1f)
+        tree.rowHeight = (tree.font.size * 2).coerceAtLeast(24)
+        tree.visibleRowCount = 15
         tree.cellRenderer = object : DefaultTreeCellRenderer() {
             override fun getTreeCellRendererComponent(
                 tree: JTree?, value: Any?, selected: Boolean, expanded: Boolean,
@@ -121,7 +138,15 @@ class ApiSurfacePanel(
                 val component = super.getTreeCellRendererComponent(
                     tree, value, selected, expanded, leaf, row, hasFocus
                 )
-                border = BorderFactory.createEmptyBorder(3, 5, 3, 4)
+                val node = (value as? DefaultMutableTreeNode)?.userObject
+                if (!selected && node is FieldNode) {
+                    if (node.field.status == SurfaceStatus.DECLARED_ONLY)
+                        foreground = UIManager.getColor("Label.disabledForeground")
+                            ?: UIManager.getColor("Label.foreground")
+                    if (node.field.status == SurfaceStatus.DECLARED_AND_REQUESTED)
+                        font = font.deriveFont(Font.BOLD)
+                }
+                border = BorderFactory.createEmptyBorder(4, 8, 4, 6)
                 return component
             }
         }
@@ -131,6 +156,26 @@ class ApiSurfacePanel(
         changes.text = "Run a permitted introspection query to record a schema snapshot."
         tabs.addTab("Field details", JScrollPane(detail))
         tabs.addTab("Schema changes", JScrollPane(changes))
+        val builderPanel = JPanel(BorderLayout(8, 8))
+        builderPanel.border = BorderFactory.createEmptyBorder(6, 6, 6, 6)
+        val builderControls = JPanel(FlowLayout(FlowLayout.LEFT, 8, 2))
+        builderControls.add(copyDraft)
+        builderControls.add(builderNotes)
+        builderPanel.add(builderControls, BorderLayout.NORTH)
+        builderPanel.add(JScrollPane(builderText), BorderLayout.CENTER)
+        copyDraft.addActionListener {
+            generatedDraft?.let { draft ->
+                try {
+                    Toolkit.getDefaultToolkit().systemClipboard.setContents(
+                        StringSelection(draft.document), null
+                    )
+                    builderNotes.text = "Query copied; no HTTP request sent."
+                } catch (_: Exception) {
+                    builderNotes.text = "Clipboard unavailable."
+                }
+            }
+        }
+        tabs.addTab("Query builder", builderPanel)
         split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, JScrollPane(tree), tabs)
         split.resizeWeight = 0.55
         split.dividerLocation = preferences.getInt("surfaceDivider", 410)
@@ -216,7 +261,9 @@ class ApiSurfacePanel(
                     typeBranch.add(item)
                     for (field in if (needle.isNotBlank() && !type.name.contains(needle, true))
                         fields else type.fields) {
-                        val child = DefaultMutableTreeNode(TypeFieldNode(type.name, field))
+                        val child = DefaultMutableTreeNode(TypeFieldNode(
+                            type.name, field, type.signatures.firstOrNull { it.name == field }
+                        ))
                         item.add(child)
                         if (child.userObject.toString() == previousSelection) restore = TreePath(child.path)
                     }
@@ -229,6 +276,7 @@ class ApiSurfacePanel(
         if (restore != null) tree.selectionPath = restore
         showChanges(current?.changes)
         if (tree.selectionPath == null) {
+            updateDraft(null)
             detail.text = "Select a field to see its provenance.\n\n" +
                 "Requested fields are parsed from captured GraphQL documents; " +
                 "they may be skipped by directives or rejected by the server.\n\n" +
@@ -249,44 +297,100 @@ class ApiSurfacePanel(
         when (val value = node.userObject) {
             is FieldNode -> {
                 val field = value.field
+                updateDraft(QueryDraftBuilder.build(value.group, field.signature))
                 detail.text = buildString {
-                    appendLine(value.group + " → " + field.name)
+                    appendLine(value.group + "  /  " + field.name)
                     appendLine()
-                    appendLine("Classification: " + value.toString().substringAfter("·").trim())
-                    appendLine("Captured request observations: " + field.requests)
+                    appendLine("Evidence: " + value.toString().substringAfter("·").trim())
+                    appendLine("Captured requests: " + field.requests)
                     appendLine()
+                    field.signature?.let { signature ->
+                        appendLine("DECLARED GRAPHQL SIGNATURE")
+                        appendLine(signature.display)
+                        appendLine("Return type: " + (signature.type?.display ?: "not reported"))
+                        if (signature.args.isNotEmpty()) {
+                            appendLine()
+                            appendLine("ARGUMENTS")
+                            signature.args.forEach { arg ->
+                                appendLine(arg.name + " : " + arg.type.display +
+                                    if (arg.required) "     Required" else "     Optional / default")
+                            }
+                        }
+                        appendLine()
+                    }
                     appendLine(when (field.status) {
                         SurfaceStatus.DECLARED_AND_REQUESTED ->
-                            "Field exists in the introspected root type and was requested in captured GraphQL traffic."
+                            "Declared by server and requested in captured traffic."
                         SurfaceStatus.DECLARED_ONLY ->
-                            "Field is declared by the introspected root type. No matching request was observed in this capture window."
+                            "Declared by server, not requested in this capture window."
                         SurfaceStatus.REQUESTED_ONLY ->
-                            "A document requested this root field, but no matching declaration was found in the available schema snapshot. This can be due to stale/partial schema or rejection."
+                            "Requested in traffic, not matched to this schema snapshot."
                         SurfaceStatus.META_FIELD_REQUESTED ->
-                            "A reserved GraphQL meta-field was requested. Meta-fields such as __typename are implicit and are not listed as normal schema fields."
+                            "Implicit GraphQL meta-field, not an ordinary schema member."
                     })
                     appendLine()
-                    appendLine("This is not proof of execution, successful access, or an authorization defect.")
+                    appendLine("No execution, successful access or authorization is implied.")
                 }
             }
-            is TypeNode -> detail.text = buildString {
-                appendLine("Schema type: " + value.type.name)
-                appendLine("Type kind: " + value.type.kind)
-                appendLine("Declared member names: " + value.type.fields.size)
-                appendLine()
-                appendLine("These type members are declarations only. GQLens does not infer " +
-                    "which nested selections correspond to this type.")
+            is TypeNode -> {
+                updateDraft(null)
+                detail.text = buildString {
+                    appendLine("SCHEMA TYPE")
+                    appendLine(value.type.name + "  [" + value.type.kind + "]")
+                    appendLine("Declared members: " + value.type.fields.size)
+                    appendLine()
+                    appendLine("Members are declarations, not observed access claims.")
+                }
             }
-            is TypeFieldNode -> detail.text = buildString {
-                appendLine(value.type + "." + value.field)
-                appendLine()
-                appendLine("Declared schema member, not an observed access claim.")
-                appendLine("Nested selection matching requires schema-aware traversal " +
-                    "and is intentionally not inferred by matching name alone.")
+            is TypeFieldNode -> {
+                updateDraft(null)
+                detail.text = buildString {
+                    appendLine("SCHEMA MEMBER")
+                    appendLine(value.type + "." + value.field)
+                    value.signature?.let { signature ->
+                        appendLine()
+                        appendLine(signature.display)
+                        appendLine("Return type: " + (signature.type?.display ?: "unavailable"))
+                        if (signature.args.isNotEmpty()) {
+                            appendLine()
+                            appendLine("ARGUMENTS")
+                            signature.args.forEach { arg ->
+                                appendLine(arg.name + ": " + arg.type.display +
+                                    if (arg.required) "     Required" else "     Optional / default")
+                            }
+                        }
+                    }
+                    appendLine()
+                    appendLine("Declared only. Nested execution is not inferred by name.")
+                }
             }
-            else -> detail.text = value?.toString() ?: ""
+            else -> {
+                updateDraft(null)
+                detail.text = value?.toString() ?: ""
+            }
         }
         detail.caretPosition = 0
+    }
+
+    private fun updateDraft(draft: QueryDraftBuilder.Draft?) {
+        generatedDraft = draft
+        copyDraft.isEnabled = draft != null
+        builderNotes.text = if (draft == null)
+            "QUERY roots with complete signatures only — no execution"
+        else "Generated locally · no request sent"
+        builderText.text = if (draft == null) {
+            "Select a QUERY root with a known return type.\n" +
+                "Mutations are intentionally excluded from generation."
+        } else buildString {
+            appendLine(draft.document)
+            appendLine()
+            appendLine("# " + draft.note)
+            for (variable in draft.requiredVariables) {
+                appendLine("# Required variable: " + variable.name + ": " + variable.type +
+                    " (value not generated)")
+            }
+        }
+        builderText.caretPosition = 0
     }
 
     private fun showChanges(delta: SchemaDelta?) {

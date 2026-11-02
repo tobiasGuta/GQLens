@@ -70,10 +70,26 @@ The `feat/unified-api-surface` feature branch builds on beta.3 with a visually o
 
 **Testing:** Maven CI exercises schema/traffic correlation, unconventional root type names, implicit meta-fields, extension attribution, snapshot differences and Swing composition. Interactive Burp Community verification of the new layout, filters and clear behavior is still required before a stable merge.
 
+## v0.2.0-beta.5: typed schema explorer and query draft builder
+
+This prerelease builds on beta.4 and improves the schema view for manual GraphQL investigations.
+
+- **Readable type signatures:** Introspection now collects declared field return types and argument types, including GraphQL lists, non-null wrappers, required inputs and whether an argument has a default value. Names and types come from the server, never from wordlists.
+- **Better native UI:** The API Surface tree has more readable font sizing, greater row spacing, differentiated matched/declared rows and structured argument/return-type details. Burp's look-and-feel remains the source of interface colors.
+- **Query builder (read-only):** Select a declared QUERY root field with a complete introspected return type. GQLens creates a syntactically parsed GraphQL query using only mandatory argument variables and an appropriate leaf selection (scalar/enum) or `__typename` selection (object/interface/union).
+- **Variables are never guessed:** Required variable names and types are listed for manual completion. No argument values, credentials or response values are produced.
+- **Copy-only workflow:** You can inspect and copy the generated document to the clipboard. **The builder never sends HTTP requests, opens a Repeater tab, or executes a mutation.** Active schema discovery remains a separate, explicitly confirmed one-request action.
+- **Metric correction:** Implicit GraphQL meta-fields such as `__typename` no longer inflate the count of application root fields requested.
+- **Regression testing:** GraphQL syntax/variable behavior, scalar-versus-object selection, nested type wrappers, defaulted inputs and Swing tab composition are covered by automated tests.
+
+**Compatibility:** The schema type signature data is only available for new introspection captured with beta.5. Reloading the extension clears the previous in-memory schema, so run the permitted introspection request again to populate it. If an endpoint does not return type/argument metadata, the builder stays disabled rather than inventing a valid query.
+
+**Limits:** A generated document is a manual review aid, not proof of access, authorization or even an executable operation without actual variable values. Deep or restricted introspection responses may be incomplete. Interactive Burp Community visual testing is still needed before merging.
+
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.4 prerelease** and download **GQLens-0.2.0-beta.4.jar** from **Assets** (not the source archives).
+2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.5 prerelease** and download **GQLens-0.2.0-beta.5.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
@@ -85,7 +101,7 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.4.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.5.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 
