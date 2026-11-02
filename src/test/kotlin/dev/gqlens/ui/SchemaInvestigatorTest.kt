@@ -44,7 +44,7 @@ class SchemaInvestigatorTest {
         val storage = ApiSurfaceStore()
         storage.record(endpoint, schema)
         SwingUtilities.invokeAndWait {
-            val panel = ApiSurfacePanel(storage) { emptyList() }
+            val panel = ApiSurfacePanel(storage, { emptyList() })
             panel.selectEndpoint(endpoint)
             val tree = all(panel).filterIsInstance<JTree>().single()
             val root = tree.model.root as DefaultMutableTreeNode
