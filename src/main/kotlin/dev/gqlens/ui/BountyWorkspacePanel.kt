@@ -95,6 +95,8 @@ class BountyWorkspacePanel(
         tabs.addTab("Cases & contexts", createCases())
         tabs.addTab("History import", createHistory())
         add(tabs, BorderLayout.CENTER)
+        refreshContexts()
+        refreshCases()
         refresh()
     }
 
@@ -344,7 +346,5 @@ class BountyWorkspacePanel(
         candidateStatus.text = candidates.size.toString() +
             " investigation candidates based on retained evidence — no vulnerability claims."
         showCandidate()
-        refreshContexts()
-        refreshCases()
     }
 }
