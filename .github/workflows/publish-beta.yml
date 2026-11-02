@@ -1,0 +1,97 @@
+name: Publish GQLens feature beta
+
+on:
+  push:
+    branches:
+      - feat/passive-evidence-explorer
+    paths:
+      - .github/workflows/publish-beta.yml
+      - pom.xml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gqlens-feature-beta-release
+  cancel-in-progress: false
+
+jobs:
+  publish-beta:
+    if: github.repository == 'tobiasGuta/GQLens' && github.ref == 'refs/heads/feat/passive-evidence-explorer'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact feature branch commit
+        uses: actions/checkout@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Validate prerelease version and verify unpublished tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(mvn --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            echo 'Expected a numeric beta version; refusing to publish' >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo 'Refusing to reuse an existing tag' >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite a GitHub release' >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Compile and test exactly the tagged code
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Verify installable Burp JAR and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="target/GQLens-${VERSION}.jar"
+          test -s "$JAR"
+          jar tf "$JAR" | grep -Fx 'burp/BurpExtender.class'
+          if jar tf "$JAR" | grep -q '^burp/api/montoya/'; then
+            echo 'Montoya API must be supplied by Burp, not bundled' >&2
+            exit 1
+          fi
+          (cd target && sha256sum "GQLens-${VERSION}.jar" > "GQLens-${VERSION}.jar.sha256")
+      - name: Publish prerelease from feature commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'NOTES'
+          GQLens beta — passive GraphQL investigation workspace for Burp Suite Community.
+
+          - Endpoint-first GraphQL explorer, nested fields, and Fields/Evidence history/Response tabs.
+          - Per-request, bounded metadata-only evidence timeline with individual HTTP outcomes.
+          - Resizable split views, visible-column customization, dynamic filters, and Burp theme integration.
+          - Explicit Repeater handoff for matching Proxy-history requests, never automatic sending.
+          - Repeater captures expose a copyable session-local reference; Montoya does not support jumping to an existing Repeater tab by ID.
+          - Regression tests, metadata-only exports, and bounded storage.
+
+          **Testing prerelease:** Automated tests and packaging passed, but interactive Burp Community testing of the new UI and Proxy history-ID handoff is still required.
+          Verify the downloaded JAR with the accompanying SHA-256 checksum asset.
+          NOTES
+          gh release create "$TAG" \
+            "target/GQLens-${VERSION}.jar" \
+            "target/GQLens-${VERSION}.jar.sha256" \
+            --target "$GITHUB_SHA" --title "GQLens $TAG" \
+            --notes-file RELEASE_NOTES.md --prerelease
+      - name: Verify release metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json tagName,isPrerelease,assets,url

@@ -20,7 +20,9 @@ data class Observation(
     val kind: String,
     val operation: String,
     val fingerprint: String,
-    val fieldPaths: List<String>
+    val fieldPaths: List<String>,
+    /** Index in a GraphQL JSON request batch, not an execution claim. */
+    val batchIndex: Int = 0
 )
 
 /**
@@ -35,22 +37,29 @@ object GraphqlAnalyzer {
     private const val MAX_DEPTH = 32
     private const val MAX_BATCH = 32
 
+    private data class Candidate(
+        val query: String?,
+        val hash: String?,
+        val operationName: String?,
+        val batchIndex: Int
+    )
+
     fun extract(method: String, url: String, contentType: String?, body: String): List<Observation> {
         val endpoint = endpointWithoutSecrets(url) ?: return emptyList()
         if (body.length > MAX_BODY_CHARS || url.length > MAX_BODY_CHARS) return emptyList()
-        val candidates = mutableListOf<Pair<String?, String?>>()
+        val candidates = mutableListOf<Candidate>()
         val ct = contentType.orEmpty().lowercase()
 
         if (method.equals("GET", ignoreCase = true)) {
             val parameters = try { params(URI(url).rawQuery.orEmpty()) } catch (_: Exception) { emptyMap() }
-            candidates.add(parameters["query"] to persistedHash(parameters["extensions"]))
+            candidates.add(Candidate(parameters["query"], persistedHash(parameters["extensions"]), parameters["operationName"], 0))
         } else if (method.equals("POST", ignoreCase = true)) {
             val trimmed = body.trimStart()
             when {
-                ct.contains("application/graphql") -> candidates.add(body to null)
+                ct.contains("application/graphql") -> candidates.add(Candidate(body, null, null, 0))
                 ct.contains("application/x-www-form-urlencoded") -> {
                     val parameters = params(body)
-                    candidates.add(parameters["query"] to persistedHash(parameters["extensions"]))
+                    candidates.add(Candidate(parameters["query"], persistedHash(parameters["extensions"]), parameters["operationName"], 0))
                 }
                 (ct.contains("json") || trimmed.startsWith("{") || trimmed.startsWith("[")) -> {
                     try {
@@ -60,13 +69,17 @@ object GraphqlAnalyzer {
                             root.isArray -> root.take(MAX_BATCH)
                             else -> emptyList()
                         }
-                        for (node in values) {
+                        for ((index, node) in values.withIndex()) {
                             if (!node.isObject) continue
                             val query = node.path("query").takeIf { it.isTextual }?.asText()
                             val hash = node.path("extensions").path("persistedQuery")
                                 .path("sha256Hash").takeIf { it.isTextual }?.asText()
                                 ?.takeIf { it.matches(Regex("[a-fA-F0-9]{64}")) }
-                            if (query != null || hash != null) candidates.add(query to hash)
+                            val operationName = node.path("operationName")
+                                .takeIf { it.isTextual }?.asText()
+                            if (query != null || hash != null) {
+                                candidates.add(Candidate(query, hash, operationName, index))
+                            }
                         }
                     } catch (_: Exception) {
                         // A JSON-shaped non-GraphQL request is not evidence.
@@ -76,31 +89,51 @@ object GraphqlAnalyzer {
         }
 
         val observations = mutableListOf<Observation>()
-        for ((query, hash) in candidates.take(MAX_BATCH)) {
+        for (candidate in candidates.take(MAX_BATCH)) {
+            val query = candidate.query
             if (!query.isNullOrBlank() && query.length <= MAX_QUERY_CHARS) {
-                observations.addAll(parseOperations(query, endpoint))
-            } else if (query == null && hash != null) {
-                observations.add(Observation(endpoint, "PERSISTED", "(hash only)", hash.take(16), emptyList()))
+                observations.addAll(
+                    parseOperations(query, endpoint, candidate.operationName, candidate.batchIndex)
+                )
+            } else if (query == null && candidate.hash != null) {
+                observations.add(
+                    Observation(endpoint, "PERSISTED", candidate.operationName ?: "(hash only)",
+                        candidate.hash.take(16), emptyList(), candidate.batchIndex)
+                )
             }
         }
         return observations
     }
 
-    private fun parseOperations(query: String, endpoint: String): List<Observation> {
+    private fun parseOperations(
+        query: String,
+        endpoint: String,
+        operationName: String?,
+        batchIndex: Int
+    ): List<Observation> {
         val doc: Document = try { Parser().parseDocument(query) } catch (_: Exception) { return emptyList() }
         val fragments = doc.definitions.filterIsInstance<FragmentDefinition>().associateBy { it.name }
-        val fingerprint = sha256(query).take(16)
-        return doc.definitions.filterIsInstance<OperationDefinition>().take(MAX_BATCH).map { definition ->
-            val paths = linkedSetOf<String>()
-            visit(definition.selectionSet?.selections.orEmpty(), "", fragments, emptySet(), paths, 0)
+        val definitions = doc.definitions.filterIsInstance<OperationDefinition>()
+        // A document can contain multiple operations, but a request selects at most one.
+        // Without operationName a multi-operation document is ambiguous, not evidence
+        // that all of its operations were executed.
+        val selected = when {
+            operationName != null -> definitions.singleOrNull { it.name == operationName }
+            definitions.size == 1 -> definitions.single()
+            else -> null
+        } ?: return emptyList()
+        val paths = linkedSetOf<String>()
+        visit(selected.selectionSet?.selections.orEmpty(), "", fragments, emptySet(), paths, 0)
+        return listOf(
             Observation(
                 endpoint = endpoint,
-                kind = definition.operation.name,
-                operation = definition.name?.take(128) ?: "(anonymous)",
-                fingerprint = fingerprint,
-                fieldPaths = paths.toList()
+                kind = selected.operation.name,
+                operation = selected.name?.take(128) ?: "(anonymous)",
+                fingerprint = sha256(query).take(16),
+                fieldPaths = paths.toList(),
+                batchIndex = batchIndex
             )
-        }
+        )
     }
 
     private fun visit(
@@ -152,7 +185,7 @@ object GraphqlAnalyzer {
             val pair = part.split("=", limit = 2)
             try {
                 val key = URLDecoder.decode(pair[0], StandardCharsets.UTF_8)
-                if (key in setOf("query", "extensions") && pair.size == 2) {
+                if (key in setOf("query", "extensions", "operationName") && pair.size == 2) {
                     put(key, URLDecoder.decode(pair[1], StandardCharsets.UTF_8))
                 }
             } catch (_: IllegalArgumentException) { }
