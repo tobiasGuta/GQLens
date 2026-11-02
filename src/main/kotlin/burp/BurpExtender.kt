@@ -49,15 +49,16 @@ class BurpExtender : BurpExtension {
                 try {
                     // Only the matching, previously accepted request can update the store.
                     // Do not persist raw response data, headers or GraphQL error messages.
+                    val context = ObservationContext(
+                        response.toolSource().toolType().name,
+                        response.messageId()
+                    )
+                    if (!store.hasPending(context)) return ResponseReceivedAction.continueWith(response)
                     val shapes = if (response.body().length() > 262_144) {
                         listOf(ResponseAnalyzer.Shape.OVERSIZED)
                     } else {
                         ResponseAnalyzer.classify(response.headerValue("Content-Type"), response.bodyToString())
                     }
-                    val context = ObservationContext(
-                        response.toolSource().toolType().name,
-                        response.messageId()
-                    )
                     if (store.recordResponse(context, response.statusCode().toInt(), shapes)) {
                         panel.scheduleRefresh()
                     }
