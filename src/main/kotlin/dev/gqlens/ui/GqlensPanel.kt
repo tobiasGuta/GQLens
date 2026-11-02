@@ -77,6 +77,8 @@ class GqlensPanel(
     private val operationTree = JTree(DefaultTreeModel(root))
     private val fieldTree = JTree(DefaultTreeModel(DefaultMutableTreeNode("Requested fields")))
     private val summary = JTextArea(6, 50)
+    private val summaryScroll = JScrollPane(summary)
+    private val compactMode = JCheckBox("Compact view", prefs.getBoolean("compactView", false))
     private val requestsMetric = JLabel("Requests  0")
     private val responsesMetric = JLabel("Responses  0")
     private val statusMetric = JLabel("Last result  -")
@@ -86,7 +88,7 @@ class GqlensPanel(
         metrics.add(responsesMetric)
         metrics.add(statusMetric)
         add(metrics, BorderLayout.NORTH)
-        add(JScrollPane(summary), BorderLayout.CENTER)
+        add(summaryScroll, BorderLayout.CENTER)
     }
     private val responseDetail = JTextArea(12, 50)
     private val evidenceDetail = JTextArea(3, 50)
@@ -100,7 +102,12 @@ class GqlensPanel(
     private val openButton = JButton("Open selected Proxy capture in Repeater")
     private val copyButton = JButton("Copy evidence reference")
     private val tabbed = JTabbedPane()
-    private val surfacePanel = ApiSurfacePanel(surfaceStore) { store.snapshot() }
+    private val surfacePanel = ApiSurfacePanel(
+        surfaceStore,
+        { store.snapshot() },
+        { endpoint, kind, field -> store.evidenceForField(endpoint, kind, field) },
+        { event -> jumpToEvidence(event) }
+    )
     private val reconPanel = ReconPanel(
         { selectedOperation?.endpoint }, runRecon,
         { endpoint, result ->
@@ -128,6 +135,14 @@ class GqlensPanel(
         filters.add(captureCheck)
         filters.add(showSelfRecon)
         showSelfRecon.addActionListener { refresh() }
+        filters.add(compactMode)
+        compactMode.addActionListener {
+            prefs.putBoolean("compactView", compactMode.isSelected)
+            summaryScroll.isVisible = !compactMode.isSelected
+            overview.revalidate()
+            overview.repaint()
+        }
+        summaryScroll.isVisible = !compactMode.isSelected
         filters.add(JLabel("Search:"))
         filters.add(search)
         filters.add(JLabel("Type:"))
@@ -432,6 +447,49 @@ class GqlensPanel(
         }
     }
 
+    /** Jump to one exact capture from API Surface without replaying any HTTP. */
+    private fun jumpToEvidence(event: EvidenceEvent) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater { jumpToEvidence(event) }
+            return
+        }
+        val row = store.snapshot().firstOrNull {
+            it.endpoint == event.endpoint && it.kind == event.kind &&
+                it.operation == event.operation && it.fingerprint == event.fingerprint
+        } ?: return
+        search.text = ""
+        typeFilter.selectedItem = "All types"
+        toolFilter.selectedItem = "All tools"
+        resultFilter.selectedItem = "All results"
+        refresh()
+        val operationRoot = operationTree.model.root as DefaultMutableTreeNode
+        fun locate(node: DefaultMutableTreeNode): TreePath? {
+            val model = node.userObject as? OperationNode
+            if (model != null && model.row.endpoint == row.endpoint &&
+                model.row.kind == row.kind && model.row.operation == row.operation &&
+                model.row.fingerprint == row.fingerprint) return TreePath(node.path)
+            for (i in 0 until node.childCount) {
+                val path = locate(node.getChildAt(i) as DefaultMutableTreeNode)
+                if (path != null) return path
+            }
+            return null
+        }
+        locate(operationRoot)?.let {
+            operationTree.selectionPath = it
+            operationTree.scrollPathToVisible(it)
+        }
+        selectOperation(row)
+        tabbed.selectedIndex = 2 // existing Evidence history view
+        val modelIndex = visibleEvidence.indexOfFirst { it.id == event.id }
+        if (modelIndex >= 0) {
+            val view = evidenceTable.convertRowIndexToView(modelIndex)
+            evidenceTable.selectionModel.setSelectionInterval(view, view)
+            evidenceTable.scrollRectToVisible(evidenceTable.getCellRect(view, 0, true))
+        } else {
+            notice.text = "Capture is outside the most recent per-operation evidence window."
+        }
+    }
+
     private fun selectEvidenceFromTable() {
         val viewIndex = evidenceTable.selectedRow
         val index = if (viewIndex < 0) -1 else evidenceTable.convertRowIndexToModel(viewIndex)
@@ -445,6 +503,16 @@ class GqlensPanel(
             appendLine("Batch index: " + event.batchIndex)
             appendLine("HTTP status: " + (event.httpStatus ?: "pending or unobserved"))
             appendLine("GraphQL response shape: " + event.responseShape)
+            event.diagnostics?.let { diagnostic ->
+                appendLine("Error objects (bounded): " + diagnostic.errors +
+                    if (diagnostic.truncated) " [truncated]" else "")
+                appendLine("Data key present: " + diagnostic.hasData)
+                appendLine("Error locations present: " + diagnostic.hasLocations)
+                appendLine("Error response paths present: " + diagnostic.hasPaths)
+                appendLine("Server-provided error codes: " +
+                    if (diagnostic.codes.isEmpty()) "not provided" else diagnostic.codes.joinToString(", "))
+                appendLine("No error messages, response data or error paths are retained.")
+            }
             if (event.tool != "PROXY") {
                 appendLine("Existing Repeater tabs cannot be directly selected through the Montoya API.")
             }
@@ -478,6 +546,14 @@ class GqlensPanel(
                     " message " + event.messageId)
                 appendLine("HTTP status: " + (event.httpStatus ?: "not observed"))
                 appendLine("Response structure: " + event.responseShape)
+                event.diagnostics?.let { diagnostic ->
+                    appendLine("Error objects (bounded): " + diagnostic.errors)
+                    appendLine("Location metadata present: " + diagnostic.hasLocations)
+                    appendLine("Path metadata present: " + diagnostic.hasPaths)
+                    appendLine("Server error codes (opaque): " +
+                        if (diagnostic.codes.isEmpty()) "none" else diagnostic.codes.joinToString(", "))
+                    if (diagnostic.truncated) appendLine("Error metadata truncated by safety limit.")
+                }
             }
             appendLine()
             appendLine("DATA and PARTIAL_DATA describe response structure only.")
