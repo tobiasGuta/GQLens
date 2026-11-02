@@ -21,6 +21,7 @@ class InvestigationWorkspace(
     private val cases = linkedMapOf<Long, Case>()
     private val contexts = linkedMapOf<Long, Context>()
     private var nextId = 1L
+    private val evidenceContexts = linkedMapOf<Long, Long>()
 
     @Synchronized fun contexts(): List<Context> = contexts.values.toList()
     @Synchronized fun cases(): List<Case> = cases.values.toList()
@@ -58,7 +59,18 @@ class InvestigationWorkspace(
         return true
     }
 
+    @Synchronized fun labelEvidence(evidenceId: Long, contextId: Long): Boolean {
+        if (contextId !in contexts) return false
+        evidenceContexts[evidenceId] = contextId
+        while (evidenceContexts.size > 3000) evidenceContexts.remove(evidenceContexts.keys.first())
+        return true
+    }
+
+    @Synchronized fun contextForEvidence(id: Long): Context? =
+        evidenceContexts[id]?.let { contexts[it] }
+
     @Synchronized fun clear() {
+        evidenceContexts.clear()
         cases.clear()
         contexts.clear()
         nextId = 1
