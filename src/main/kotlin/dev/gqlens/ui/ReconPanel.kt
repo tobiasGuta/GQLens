@@ -93,7 +93,7 @@ class ReconPanel(
         val chosen = mode.selectedItem as? SchemaRecon.Mode ?: SchemaRecon.Mode.ROOT_FIELDS
         val confirmation = JPanel(BorderLayout(8, 8))
         val explanation = JTextArea(
-            "Send one unauthenticated POST to: $url\\nMode: ${chosen.title}\\n" +
+            "Send one unauthenticated POST to: $url\nMode: ${chosen.title}\\n" +
             "Scope required. No redirects, retries, mutations or field guessing."
         , 3, 54).apply {
             isEditable = false
