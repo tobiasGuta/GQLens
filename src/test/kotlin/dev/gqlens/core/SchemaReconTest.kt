@@ -113,4 +113,40 @@ class SchemaReconTest {
         assertNull(result.rootTypes.single().details.single().type)
         assertNull(QueryDraftBuilder.build("QUERY", result.rootTypes.single().details.single()))
     }
+    @Test
+    fun missingArgumentListOrDefaultMetadataCannotAuthorizeQueryDraft() {
+        val result = SchemaRecon.parse(SchemaRecon.Mode.ROOT_FIELDS, 200, """
+            {"data":{"__schema":{"queryType":{"name":"Query","fields":[
+              {"name":"partial","type":{"kind":"OBJECT","name":"User"}},
+              {"name":"argPartial","type":{"kind":"OBJECT","name":"User"},
+                "args":[{"name":"id","type":{"kind":"NON_NULL",
+                   "ofType":{"kind":"SCALAR","name":"ID"}}}]},
+              {"name":"complete","type":{"kind":"OBJECT","name":"User"},"args":[]}
+            ]}}}}
+        """.trimIndent())
+        val fields = result.rootTypes.single().details.associateBy { it.name }
+        assertFalse(fields.getValue("partial").complete)
+        assertFalse(fields.getValue("argPartial").complete)
+        assertTrue(fields.getValue("complete").complete)
+        assertNull(QueryDraftBuilder.build("QUERY", fields.getValue("partial")))
+        assertNull(QueryDraftBuilder.build("QUERY", fields.getValue("argPartial")))
+        assertNotNull(QueryDraftBuilder.build("QUERY", fields.getValue("complete")))
+    }
+
+    @Test
+    fun argumentLimitFlagsTruncationAndDisablesGeneratedDrafts() {
+        val args = (1..40).joinToString(",") {
+            """{"name":"a$it","defaultValue":null,
+                "type":{"kind":"SCALAR","name":"String"}}"""
+        }
+        val body = """{"data":{"__schema":{"queryType":{"name":"Query","fields":[
+            {"name":"large","type":{"kind":"SCALAR","name":"String"},"args":[$args]}
+        ]}}}}"""
+        val result = SchemaRecon.parse(SchemaRecon.Mode.ROOT_FIELDS, 200, body)
+        assertTrue(result.truncated)
+        val field = result.rootTypes.single().details.single()
+        assertFalse(field.complete)
+        assertNull(QueryDraftBuilder.build("QUERY", field))
+    }
+
 }
