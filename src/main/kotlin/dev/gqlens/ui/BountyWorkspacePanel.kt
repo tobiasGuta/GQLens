@@ -330,6 +330,18 @@ class BountyWorkspacePanel(
                 "\nOnly session-local capture IDs are retained."
     }
 
+    fun isImporting(): Boolean = activeWorker != null
+
+    /** Called only after an explicit session Clear. Never reset the user's notes on traffic refresh. */
+    fun resetSession() {
+        refreshContexts()
+        refreshCases(null)
+        caseTitle.text = ""
+        caseNotes.text = ""
+        evidenceInCase.text = ""
+        refresh()
+    }
+
     fun refresh() {
         if (!SwingUtilities.isEventDispatchThread()) {
             SwingUtilities.invokeLater { refresh() }
