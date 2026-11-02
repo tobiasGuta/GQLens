@@ -1,0 +1,94 @@
+name: Publish GQLens investigation intelligence beta
+
+on:
+  push:
+    branches:
+      - feat/investigation-intelligence-beta7
+    paths:
+      - .github/workflows/publish-intelligence-beta.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gqlens-investigation-intelligence-beta
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'tobiasGuta/GQLens' && github.ref == 'refs/heads/feat/investigation-intelligence-beta7'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact feature commit
+        uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Check Maven version and exclusive beta tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(mvn -q --batch-mode --no-transfer-progress help:evaluate -Dexpression=project.version -DforceStdout)"
+          test "$VERSION" = '0.2.0-beta.7' || { echo 'Expected beta.7 version' >&2; exit 1; }
+          TAG="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo 'Refusing to overwrite existing release tag' >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite published release' >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Build and test JAR
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Validate Burp entrypoint and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="target/GQLens-${VERSION}.jar"
+          test -s "$JAR"
+          jar tf "$JAR" | grep -Fx 'burp/BurpExtender.class'
+          if jar tf "$JAR" | grep -q '^burp/api/montoya/'; then
+            echo 'Montoya API must not be bundled' >&2
+            exit 1
+          fi
+          (cd target && sha256sum "GQLens-${VERSION}.jar" > "GQLens-${VERSION}.jar.sha256")
+      - name: Publish beta JAR and checksum without replacing older tags
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'NOTES'
+          GQLens v0.2.0-beta.7: opt-in controlled GraphQL schema reconnaissance and improved evidence explorer.
+
+          - Generic GraphQL error diagnostics from observed responses: bounded counts,
+            data-key, location/path presence, and opaque server-provided error code labels.
+          - No vendor-specific hardcoded error classification, vulnerability claims, or
+            retention of error messages, path elements, response values or raw HTTP bodies.
+          - Exact root-field-to-capture provenance, with a Field evidence view and jump
+            back to the original session-local evidence history (no requests transmitted).
+          - Navigate from introspected field return types to their declared type and back.
+          - Compact operation overview that frees screen space while preserving user layout preferences.
+          - Regression tests for endpoint isolation, GraphQL batches, privacy, UI navigation,
+            and correlation. Existing opt-in recon safeguards remain unchanged.
+
+          **Development prerelease.** Automated tests passed. Manual Burp Community validation of evidence links, new diagnostics and compact layout remains necessary.
+          Verify the downloaded JAR using the attached SHA-256 checksum.
+          NOTES
+          gh release create "$TAG" \
+            "target/GQLens-${VERSION}.jar" \
+            "target/GQLens-${VERSION}.jar.sha256" \
+            --target "$GITHUB_SHA" --title "GQLens $TAG" \
+            --notes-file RELEASE_NOTES.md --prerelease
+      - name: Verify new prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$TAG" --json tagName,isPrerelease,assets,url

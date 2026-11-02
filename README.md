@@ -100,10 +100,23 @@ This branch upgrades the native Burp GraphQL schema investigator while preservin
 
 **Desktop testing remains necessary:** CI verifies source, tests and packaging but not the exact rendered layout in your running Burp Suite Community Edition.
 
+## v0.2.0-beta.7: Investigation Intelligence
+
+This isolated beta builds on the schema investigator with **passive, evidence-driven** diagnostics and navigation:
+
+- **GraphQL response diagnostics:** Parse the GraphQL response contract into bounded structural metadata per captured exchange. Display error-object counts, whether `data`, error `locations`, or error `path` arrays were present, and identifier-shaped `errors[].extensions.code` values if the server supplies them. There are **no hardcoded vendor error categories or automatic vulnerability claims**. Error messages, path segments, locations, response values, headers and cookies are **not retained**.
+- **Field-to-evidence linkage:** A new `Field evidence` tab lists individual captures that requested a selected root field. Matching uses the observed endpoint, operation kind and exact root field path; it does not infer nested fields based on a shared name. The list is bounded, excludes the extension's own introspection traffic, and provides a session-local evidence reference and a **jump back to the matching Evidence history row**. No requests are transmitted.
+- **Schema relationship navigation:** `Follow return type` resolves the selected field's introspected named type and navigates to that type in the schema tree; `Back` returns to the prior field. It never guesses target-specific type names.
+- **Compact view:** A user-selectable toggle compresses the operation overview to reclaim vertical investigation space without discarding the persisted expanded-panel divider setting.
+- **Provenance preservation:** GraphQL response diagnostics follow Burp tool/message correlation and batch response indices. A server-provided error code remains an **opaque identifier**; it is never treated as proof of authentication failure, a vulnerability, or successful execution.
+- **No additional active scanning:** Existing single-request, explicit user-confirmed, in-scope introspection remains unchanged. All new beta.7 features operate on observed traffic and previously discovered schema metadata.
+
+**Testing:** Automated Kotlin tests cover diagnostics privacy, batch separation, endpoint/tool isolation, field-evidence mapping, and Swing type navigation. Burp Community desktop UI/clipboard tests remain required before a stable merge. Raw application data still belongs to Burp's own history, not GQLens's metadata store.
+
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.6 prerelease** and download **GQLens-0.2.0-beta.6.jar** from **Assets** (not the source archives).
+2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.7 prerelease** and download **GQLens-0.2.0-beta.7.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
@@ -115,7 +128,7 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.6.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.7.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 

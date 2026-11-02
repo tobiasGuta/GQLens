@@ -5,6 +5,7 @@ import dev.gqlens.core.ApiSurfaceStore
 import dev.gqlens.core.QueryDraftBuilder
 import dev.gqlens.core.SchemaRecon
 import dev.gqlens.core.ObservationRow
+import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.SchemaDelta
 import dev.gqlens.core.SurfaceField
 import dev.gqlens.core.SurfaceReport
@@ -50,7 +51,9 @@ import javax.swing.tree.TreePath
  */
 class ApiSurfacePanel(
     private val schemas: ApiSurfaceStore,
-    private val observations: () -> List<ObservationRow>
+    private val observations: () -> List<ObservationRow>,
+    private val fieldEvidence: (String, String, String) -> List<EvidenceEvent> = { _, _, _ -> emptyList() },
+    private val openEvidence: (EvidenceEvent) -> Unit = {}
 ) : JPanel(BorderLayout()) {
     private data class FieldNode(
         val group: String,
@@ -80,6 +83,11 @@ class ApiSurfacePanel(
     private val root = DefaultMutableTreeNode("API Surface")
     private val tree = JTree(DefaultTreeModel(root))
     private val detailsPanel = SchemaDetailsPanel()
+    private val fieldEvidencePanel = FieldEvidencePanel(openEvidence)
+    private val followType = JButton("Follow return type").apply { isEnabled = false }
+    private val backType = JButton("Back").apply { isEnabled = false }
+    private var selectedReturnType: String? = null
+    private var previousTypeSelection: String? = null
     private val changes = textArea()
     private val builderPreview = CodePreviewPanel()
     private val builderFormat = JComboBox(arrayOf("GraphQL", "JSON request body"))
@@ -155,7 +163,20 @@ class ApiSurfacePanel(
         detailsPanel.placeholder(
             "Declared does not mean accessible. Requested does not mean executed.")
         changes.text = "Run a permitted introspection query to record a schema snapshot."
-        tabs.addTab("Field details", detailsPanel)
+        val detailContainer = JPanel(BorderLayout(4, 6))
+        val navigate = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
+        navigate.add(followType)
+        navigate.add(backType)
+        detailContainer.add(navigate, BorderLayout.NORTH)
+        detailContainer.add(detailsPanel, BorderLayout.CENTER)
+        followType.addActionListener { followSelectedType() }
+        backType.addActionListener {
+            val key = previousTypeSelection ?: return@addActionListener
+            previousTypeSelection = null
+            backType.isEnabled = false
+            navigateToKey(key)
+        }
+        tabs.addTab("Field details", detailContainer)
         tabs.addTab("Schema changes", JScrollPane(changes))
         val builderPanel = JPanel(BorderLayout(8, 8))
         builderPanel.border = BorderFactory.createEmptyBorder(6, 6, 6, 6)
@@ -171,6 +192,7 @@ class ApiSurfacePanel(
         copyDraft.addActionListener { copyDraftToClipboard(false) }
         copyJson.addActionListener { copyDraftToClipboard(true) }
         tabs.addTab("Query builder", builderPanel)
+        tabs.addTab("Field evidence", fieldEvidencePanel)
         split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, JScrollPane(tree), tabs)
         split.resizeWeight = 0.55
         split.dividerLocation = preferences.getInt("surfaceDivider", 410)
@@ -292,6 +314,9 @@ class ApiSurfacePanel(
         if (restore != null) tree.selectionPath = restore
         showChanges(current?.changes)
         if (tree.selectionPath == null) {
+            selectedReturnType = null
+            followType.isEnabled = false
+            fieldEvidencePanel.showField(null, null, emptyList())
             updateDraft(null)
             detailsPanel.placeholder(
                 "Requested selections may be skipped or rejected; declarations do not prove authorization.")
@@ -316,26 +341,66 @@ class ApiSurfacePanel(
     private fun typeGroupLabel(kind: String): String =
         kind.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() } + " types"
 
+    private fun findTreePath(key: String): TreePath? {
+        fun searchNode(node: DefaultMutableTreeNode): DefaultMutableTreeNode? {
+            if (nodeKey(node.userObject) == key) return node
+            for (i in 0 until node.childCount) {
+                val match = searchNode(node.getChildAt(i) as DefaultMutableTreeNode)
+                if (match != null) return match
+            }
+            return null
+        }
+        return searchNode(root)?.let { TreePath(it.path) }
+    }
+
+    private fun navigateToKey(key: String) {
+        val path = findTreePath(key) ?: return
+        tree.expandPath(path.parentPath)
+        tree.selectionPath = path
+        tree.scrollPathToVisible(path)
+    }
+
+    private fun followSelectedType() {
+        val typeName = selectedReturnType ?: return
+        val type = report?.types?.firstOrNull { it.name == typeName } ?: return
+        val current = tree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return
+        val target = "type:" + type.kind + ":" + type.name
+        if (findTreePath(target) == null) return
+        previousTypeSelection = nodeKey(current.userObject)
+        navigateToKey(target)
+        backType.isEnabled = true
+        tabs.selectedIndex = 0
+    }
+
     private fun showSelection() {
         val node = tree.lastSelectedPathComponent as? DefaultMutableTreeNode ?: return
+        selectedReturnType = null
         when (val value = node.userObject) {
             is FieldNode -> {
                 detailsPanel.showRoot(value.group, value.field)
                 updateDraft(QueryDraftBuilder.build(value.group, value.field.signature))
+                selectedReturnType = value.field.signature?.type?.namedType
+                fieldEvidencePanel.showField(value.group, value.field.name,
+                    endpoint?.let { fieldEvidence(it, value.group, value.field.name) }.orEmpty())
             }
             is TypeNode -> {
                 detailsPanel.showType(value.type)
                 updateDraft(null)
+                fieldEvidencePanel.showField(null, null, emptyList())
             }
             is TypeFieldNode -> {
                 detailsPanel.showMember(value.type, value.field, value.signature)
                 updateDraft(null)
+                selectedReturnType = value.signature?.type?.namedType
+                fieldEvidencePanel.showField(null, null, emptyList())
             }
             else -> {
                 detailsPanel.placeholder("Choose a root field or schema member to inspect its type.")
                 updateDraft(null)
+                fieldEvidencePanel.showField(null, null, emptyList())
             }
         }
+        followType.isEnabled = report?.types?.any { it.name == selectedReturnType } == true
     }
 
     private fun updateDraft(draft: QueryDraftBuilder.Draft?) {

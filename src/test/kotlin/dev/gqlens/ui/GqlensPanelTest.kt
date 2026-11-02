@@ -34,7 +34,7 @@ class GqlensPanelTest {
                 .first { tabs -> (0 until tabs.tabCount).any {
                     tabs.getTitleAt(it) == "Query builder"
                 } }
-            assertEquals(listOf("Field details", "Schema changes", "Query builder"),
+            assertEquals(listOf("Field details", "Schema changes", "Query builder", "Field evidence"),
                 (0 until nested.tabCount).map { nested.getTitleAt(it) })
             assertTrue(allComponents(panel).filterIsInstance<JTree>().size >= 2)
         }

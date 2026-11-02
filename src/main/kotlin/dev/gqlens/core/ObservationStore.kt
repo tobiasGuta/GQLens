@@ -41,7 +41,8 @@ data class EvidenceEvent(
     val messageId: Int,
     val observedAtMillis: Long,
     val httpStatus: Int? = null,
-    val responseShape: String = "PENDING"
+    val responseShape: String = "PENDING",
+    val diagnostics: ResponseDiagnostics.Summary? = null
 )
 
 /** Bounded in-memory operation inventory and per-request evidence history. */
@@ -123,7 +124,8 @@ class ObservationStore(
     fun recordResponse(
         context: ObservationContext,
         httpStatus: Int,
-        shapes: List<ResponseAnalyzer.Shape>
+        shapes: List<ResponseAnalyzer.Shape>,
+        diagnostics: List<ResponseDiagnostics.Summary> = emptyList()
     ): Boolean {
         val links = pending.remove(correlationKey(context)) ?: return false
         var changed = false
@@ -140,7 +142,8 @@ class ObservationStore(
             if (eventId != null) {
                 val event = evidence[eventId]
                 if (event != null) evidence[eventId] = event.copy(
-                    httpStatus = httpStatus, responseShape = shape
+                    httpStatus = httpStatus, responseShape = shape,
+                    diagnostics = diagnostics.getOrNull(link.batchIndex)
                 )
             }
             changed = true
@@ -158,6 +161,26 @@ class ObservationStore(
         return evidence.values.asSequence().filter {
             key(it.endpoint, it.kind, it.operation, it.fingerprint) == rowKey
         }.toList().takeLast(maxEvents.coerceIn(1, 1000)).asReversed()
+    }
+
+    /**
+     * Resolve a schema ROOT field to individual captured request provenance.
+     * Use only exact root selection paths, never nested name matches or guessed
+     * relationship mapping. Do not show internal GQLens introspection traffic.
+     */
+    @Synchronized
+    fun evidenceForField(
+        endpoint: String, kind: String, field: String, limit: Int = 150
+    ): List<EvidenceEvent> {
+        val matchingKeys = rows.values.asSequence().filter { row ->
+            row.endpoint == endpoint && row.kind.equals(kind, true) &&
+                row.fieldPaths.any { it == field }
+        }.map(::key).toSet()
+        if (matchingKeys.isEmpty()) return emptyList()
+        return evidence.values.asSequence().filter { event ->
+            event.tool != "GQLENS_RECON" &&
+                key(event.endpoint, event.kind, event.operation, event.fingerprint) in matchingKeys
+        }.toList().takeLast(limit.coerceIn(1, 500)).asReversed()
     }
 
     @Synchronized fun rejectedCount(): Long = rejected

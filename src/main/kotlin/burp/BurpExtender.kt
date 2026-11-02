@@ -18,6 +18,7 @@ import dev.gqlens.core.ObservationContext
 import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.ObservationStore
 import dev.gqlens.core.ResponseAnalyzer
+import dev.gqlens.core.ResponseDiagnostics
 import dev.gqlens.ui.GqlensPanel
 
 /** Passive capture plus explicitly confirmed, single-request introspection in Community Edition. */
@@ -75,7 +76,12 @@ class BurpExtender : BurpExtension {
                     } else {
                         ResponseAnalyzer.classify(response.headerValue("Content-Type"), response.bodyToString())
                     }
-                    if (store.recordResponse(context, response.statusCode().toInt(), shapes)) {
+                    val diagnostics = if (response.body().length() > 262_144) {
+                        listOf(ResponseDiagnostics.Summary(truncated = true))
+                    } else {
+                        ResponseDiagnostics.inspect(response.headerValue("Content-Type"), response.bodyToString())
+                    }
+                    if (store.recordResponse(context, response.statusCode().toInt(), shapes, diagnostics)) {
                         panel.scheduleRefresh()
                     }
                 } catch (_: Exception) {
