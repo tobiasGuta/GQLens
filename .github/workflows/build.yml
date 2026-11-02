@@ -21,20 +21,31 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - name: Resolve project version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(mvn --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          test -n "$VERSION"
+          echo "GQLENS_VERSION=$VERSION" >> "$GITHUB_ENV"
       - name: Compile and test
         run: mvn --batch-mode --no-transfer-progress clean verify
       - name: Verify Burp entry point is packaged
+        shell: bash
         run: |
-          test -s target/GQLens-0.1.0.jar
-          jar tf target/GQLens-0.1.0.jar | grep -Fx burp/BurpExtender.class
-          if jar tf target/GQLens-0.1.0.jar | grep -q '^burp/api/montoya/'; then
-            echo "Montoya API must not be bundled" >&2
+          set -euo pipefail
+          JAR="target/GQLens-${GQLENS_VERSION}.jar"
+          test -s "$JAR"
+          jar tf "$JAR" | grep -Fx 'burp/BurpExtender.class'
+          if jar tf "$JAR" | grep -q '^burp/api/montoya/'; then
+            echo 'Montoya API must not be bundled' >&2
             exit 1
           fi
+          sha256sum "$JAR"
       - name: Upload downloadable extension JAR
         uses: actions/upload-artifact@v4
         with:
-          name: GQLens-v0.1.0-burp-community
-          path: target/GQLens-0.1.0.jar
+          name: GQLens-v${{ env.GQLENS_VERSION }}-burp-community
+          path: target/GQLens-${{ env.GQLENS_VERSION }}.jar
           if-no-files-found: error
           retention-days: 30
