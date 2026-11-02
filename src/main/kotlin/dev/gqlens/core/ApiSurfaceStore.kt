@@ -137,7 +137,13 @@ class ApiSurfaceStore(private val maxEndpoints: Int = 64) {
                     field in declaredSet -> SurfaceStatus.DECLARED_ONLY
                     else -> SurfaceStatus.REQUESTED_ONLY
                 }
-                SurfaceField(field, status, count, signatures[field])
+                // A truncated schema may omit required argument metadata. Keep its
+                // fields visible but disable draft generation until a complete read.
+                val signature = signatures[field]?.let {
+                    if (types?.truncated == true || roots?.truncated == true)
+                        it.copy(complete = false) else it
+                }
+                SurfaceField(field, status, count, signature)
             }
             SurfaceRoot(kind, name, fields, known)
         }
