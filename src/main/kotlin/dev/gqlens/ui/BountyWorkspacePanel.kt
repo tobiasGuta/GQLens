@@ -52,10 +52,6 @@ class BountyWorkspacePanel(
     private val caseModel = javax.swing.DefaultListModel<InvestigationWorkspace.Case>()
     private val casesList = JList(caseModel).apply {
         selectionMode = ListSelectionModel.SINGLE_SELECTION
-        cellRenderer = javax.swing.DefaultListCellRenderer().also { renderer ->
-            // Default renderer keeps the Burp Look and Feel; objects' titles are
-            // rendered by installing a dedicated renderer below.
-        }
     }
     private val caseTitle = JTextField(20)
     private val caseNotes = JTextArea(6, 25).apply { lineWrap = true; wrapStyleWord = true }
@@ -91,6 +87,17 @@ class BountyWorkspacePanel(
                 )
             }
         }
+        val contextRenderer = object : javax.swing.DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>?, value: Any?, index: Int,
+                isSelected: Boolean, cellHasFocus: Boolean
+            ): java.awt.Component = super.getListCellRendererComponent(
+                list, (value as? InvestigationWorkspace.Context)?.label ?: "No label",
+                index, isSelected, cellHasFocus
+            )
+        }
+        contextForCapture.renderer = contextRenderer
+        caseContext.renderer = contextRenderer
         tabs.addTab("Investigation queue", createQueue())
         tabs.addTab("Cases & contexts", createCases())
         tabs.addTab("History import", createHistory())
@@ -156,10 +163,11 @@ class BountyWorkspacePanel(
         val newCase = JButton("New case")
         newCase.addActionListener {
             val title = JOptionPane.showInputDialog(this, "Investigation case title:") ?: return@addActionListener
-            if (research.addCase(title) == null) {
+            val created = research.addCase(title)
+            if (created == null) {
                 JOptionPane.showMessageDialog(this, "Case name blank or capacity reached.")
             }
-            refreshCases()
+            refreshCases(created?.id)
         }
         val newContext = JButton("New test context")
         newContext.addActionListener {
