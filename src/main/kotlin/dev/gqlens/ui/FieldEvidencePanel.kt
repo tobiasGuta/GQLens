@@ -29,7 +29,7 @@ class FieldEvidencePanel(
     }
     private val table = JTable(model).apply {
         autoCreateRowSorter = true
-        selectionMode = ListSelectionModel.SINGLE_SELECTION
+        selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
         rowHeight = (font.size * 2).coerceAtLeast(24)
         fillsViewportHeight = true
     }
