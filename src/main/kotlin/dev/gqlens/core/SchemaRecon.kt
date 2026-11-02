@@ -62,7 +62,9 @@ object SchemaRecon {
         val outcome: String,
         val rootTypes: List<TypeSummary> = emptyList(),
         val types: List<TypeSummary> = emptyList(),
-        val truncated: Boolean = false
+        val truncated: Boolean = false,
+        /** Actual root type names supplied by the server, keyed by GraphQL operation kind. */
+        val rootTypeNames: Map<String, String> = emptyMap()
     ) {
         val allTypes: List<TypeSummary> get() = if (mode == Mode.ROOT_FIELDS) rootTypes else types
     }
@@ -113,18 +115,26 @@ object SchemaRecon {
             return TypeSummary(name, kind.take(32), names.distinct())
         }
 
+        val rootTypeNames = linkedMapOf<String, String>()
+        for ((role, field) in listOf("QUERY" to "queryType",
+            "MUTATION" to "mutationType", "SUBSCRIPTION" to "subscriptionType")) {
+            val name = schema.path(field).path("name")
+            if (name.isTextual && name.asText().length <= 256) rootTypeNames[role] = name.asText()
+        }
         val roots = listOf("queryType", "mutationType", "subscriptionType")
             .mapNotNull { name -> convert(schema.path(name), false) }
         if (mode == Mode.ROOT_FIELDS) {
-            return Result(mode, httpStatus, "SCHEMA_OBSERVED", roots, truncated = truncated)
+            return Result(mode, httpStatus, "SCHEMA_OBSERVED", roots, truncated = truncated,
+                rootTypeNames = rootTypeNames)
         }
         val typesArray = schema.path("types")
-        if (!typesArray.isArray) return Result(mode, httpStatus, "NO_TYPES_IN_SCHEMA", roots)
+        if (!typesArray.isArray) return Result(mode, httpStatus, "NO_TYPES_IN_SCHEMA", roots, rootTypeNames = rootTypeNames)
         val types = ArrayList<TypeSummary>()
         for (entry in typesArray) {
             if (types.size >= MAX_TYPES) { truncated = true; break }
             convert(entry, true)?.let { types.add(it) }
         }
-        return Result(mode, httpStatus, "SCHEMA_OBSERVED", roots, types, truncated)
+        return Result(mode, httpStatus, "SCHEMA_OBSERVED", roots, types, truncated,
+            rootTypeNames = rootTypeNames)
     }
 }

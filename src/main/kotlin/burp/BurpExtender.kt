@@ -6,6 +6,8 @@ import burp.api.montoya.http.RedirectionMode
 import burp.api.montoya.http.RequestOptions
 import burp.api.montoya.http.message.requests.HttpRequest
 import dev.gqlens.core.SchemaRecon
+import dev.gqlens.core.ApiSurfaceStore
+import dev.gqlens.core.ReconTrafficRegistry
 import burp.api.montoya.http.handler.HttpHandler
 import burp.api.montoya.http.handler.HttpRequestToBeSent
 import burp.api.montoya.http.handler.HttpResponseReceived
@@ -23,10 +25,13 @@ class BurpExtender : BurpExtension {
     override fun initialize(api: MontoyaApi) {
         api.extension().setName("GQLens")
         val store = ObservationStore()
+        val surface = ApiSurfaceStore()
+        val ownRecon = ReconTrafficRegistry()
         val panel = GqlensPanel(
             store,
+            surface,
             { event -> sendCapturedEvidenceToRepeater(api, event) },
-            { endpoint, mode -> runSchemaReconOnce(api, endpoint, mode) }
+            { endpoint, mode -> runSchemaReconOnce(api, endpoint, mode, ownRecon) }
         )
         api.userInterface().applyThemeToComponent(panel)
         api.userInterface().registerSuiteTab("GQLens", panel)
@@ -40,10 +45,12 @@ class BurpExtender : BurpExtension {
                                 request.method(), request.url(),
                                 request.headerValue("Content-Type"), request.bodyToString()
                             )
-                            val context = ObservationContext(
-                                request.toolSource().toolType().name,
-                                request.messageId()
-                            )
+                            val tool = request.toolSource().toolType().name
+                            val source = if (ownRecon.labelRequest(
+                                tool, observations.firstOrNull()?.endpoint.orEmpty(),
+                                observations.map { it.fingerprint }, request.messageId()
+                            )) "GQLENS_RECON" else tool
+                            val context = ObservationContext(source, request.messageId())
                             for (observation in observations) store.record(observation, context)
                             if (observations.isNotEmpty()) panel.scheduleRefresh()
                         }
@@ -58,10 +65,10 @@ class BurpExtender : BurpExtension {
                 try {
                     // Only the matching, previously accepted request can update the store.
                     // Do not persist raw response data, headers or GraphQL error messages.
-                    val context = ObservationContext(
-                        response.toolSource().toolType().name,
-                        response.messageId()
-                    )
+                    val tool = response.toolSource().toolType().name
+                    val source = if (ownRecon.labelResponse(tool, response.messageId()))
+                        "GQLENS_RECON" else tool
+                    val context = ObservationContext(source, response.messageId())
                     if (!store.hasPending(context)) return ResponseReceivedAction.continueWith(response)
                     val shapes = if (response.body().length() > 262_144) {
                         listOf(ResponseAnalyzer.Shape.OVERSIZED)
@@ -77,7 +84,7 @@ class BurpExtender : BurpExtension {
                 return ResponseReceivedAction.continueWith(response)
             }
         })
-        api.logging().logToOutput("GQLens: passive GraphQL evidence explorer loaded.")
+        api.logging().logToOutput("GQLens: passive evidence and opt-in GraphQL API Surface explorer loaded.")
     }
 
     /**
@@ -115,7 +122,8 @@ class BurpExtender : BurpExtension {
      * Request is freshly built, scope-checked, redirect-disabled and time-bounded.
      */
     private fun runSchemaReconOnce(
-        api: MontoyaApi, endpoint: String, mode: SchemaRecon.Mode
+        api: MontoyaApi, endpoint: String, mode: SchemaRecon.Mode,
+        ownRecon: ReconTrafficRegistry
     ): SchemaRecon.Result {
         return try {
             val uri = java.net.URI(endpoint)
@@ -136,7 +144,12 @@ class BurpExtender : BurpExtension {
                 .withRedirectionMode(RedirectionMode.NEVER)
                 .withResponseTimeout(10_000)
                 .withUpstreamTLSVerification()
-            val exchange = api.http().sendRequest(request, options)
+            ownRecon.arm(endpoint, mode)
+            val exchange = try {
+                api.http().sendRequest(request, options)
+            } finally {
+                ownRecon.disarm(endpoint, mode)
+            }
             val response = if (exchange.hasResponse()) exchange.response() else null
             if (response == null) {
                 SchemaRecon.Result(mode, null, "NO_RESPONSE")

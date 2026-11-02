@@ -20,7 +20,10 @@ data class ObservationRow(
     val lastMessageId: Int? = null,
     val lastHttpStatus: Int? = null,
     val lastResponseShape: String = "NOT_OBSERVED",
-    val responsesSeen: Int = 0
+    val responsesSeen: Int = 0,
+    /** Whether this operation was also captured outside GQLens's own recon sender. */
+    val regularSeen: Int = 0,
+    val reconSeen: Int = 0
 )
 
 /**
@@ -79,14 +82,18 @@ class ObservationStore(
                 observation.fingerprint, observation.fieldPaths, 1,
                 firstSeenMillis = now, lastSeenMillis = now,
                 lastTool = context?.tool ?: "UNKNOWN",
-                lastMessageId = context?.messageId
+                lastMessageId = context?.messageId,
+                regularSeen = if (context?.tool == "GQLENS_RECON") 0 else 1,
+                reconSeen = if (context?.tool == "GQLENS_RECON") 1 else 0
             )
         } else old.copy(
             fieldPaths = (old.fieldPaths + observation.fieldPaths).distinct().take(500),
             seen = if (old.seen == Int.MAX_VALUE) old.seen else old.seen + 1,
             lastSeenMillis = now,
             lastTool = context?.tool ?: old.lastTool,
-            lastMessageId = context?.messageId ?: old.lastMessageId
+            lastMessageId = context?.messageId ?: old.lastMessageId,
+            regularSeen = old.regularSeen + if (context?.tool == "GQLENS_RECON") 0 else 1,
+            reconSeen = old.reconSeen + if (context?.tool == "GQLENS_RECON") 1 else 0
         )
         if (context != null) {
             sequence++

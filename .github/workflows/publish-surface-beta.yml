@@ -1,0 +1,91 @@
+name: Publish unified GraphQL API Surface beta
+
+on:
+  push:
+    branches:
+      - feat/unified-api-surface
+    paths:
+      - .github/workflows/publish-surface-beta.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gqlens-unified-api-surface-beta
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'tobiasGuta/GQLens' && github.ref == 'refs/heads/feat/unified-api-surface'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact feature commit
+        uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Check Maven version and exclusive beta tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(mvn -q --batch-mode --no-transfer-progress help:evaluate -Dexpression=project.version -DforceStdout)"
+          test "$VERSION" = '0.2.0-beta.4' || { echo 'Expected beta.4 version' >&2; exit 1; }
+          TAG="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo 'Refusing to overwrite existing release tag' >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite published release' >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Build and test JAR
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Validate Burp entrypoint and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="target/GQLens-${VERSION}.jar"
+          test -s "$JAR"
+          jar tf "$JAR" | grep -Fx 'burp/BurpExtender.class'
+          if jar tf "$JAR" | grep -q '^burp/api/montoya/'; then
+            echo 'Montoya API must not be bundled' >&2
+            exit 1
+          fi
+          (cd target && sha256sum "GQLens-${VERSION}.jar" > "GQLens-${VERSION}.jar.sha256")
+      - name: Publish beta JAR and checksum without replacing older tags
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'NOTES'
+          GQLens v0.2.0-beta.4: opt-in controlled GraphQL schema reconnaissance and improved evidence explorer.
+
+          - New API Surface tab with Burp-native metric cards, searchable declared/requested root fields, type explorer and detailed evidence semantics.
+          - Live correlation of server-declared root fields and root selections observed in application requests.
+          - Explicit handling of implicit GraphQL meta-fields; nested type fields remain declared-only, not misattributed.
+          - Bounded per-endpoint schema history and added/removed declaration comparisons with truncation safeguards.
+          - Extension-generated schema introspection labeled separately and hidden in the application inventory by default.
+          - Preview exact introspection query before explicit per-request confirmation.
+          - All prior passive evidence functionality and single scoped recon request controls preserved.
+
+          **Development prerelease.** Automated tests passed. Manual Burp Community testing of the new API Surface tree, search, history and privacy behavior remains necessary.
+          Verify the downloaded JAR using the attached SHA-256 checksum.
+          NOTES
+          gh release create "$TAG" \
+            "target/GQLens-${VERSION}.jar" \
+            "target/GQLens-${VERSION}.jar.sha256" \
+            --target "$GITHUB_SHA" --title "GQLens $TAG" \
+            --notes-file RELEASE_NOTES.md --prerelease
+      - name: Verify new prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$TAG" --json tagName,isPrerelease,assets,url

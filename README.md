@@ -54,10 +54,26 @@ This prerelease builds upon the beta.2 evidence explorer and remains **passive b
 
 **Testing status:** Automated Maven and headless Swing tests cover the new introspection parsing and workspace components. Manual testing inside Burp Community is still required before treating this as a stable release. Only send recon requests where the test program explicitly permits them.
 
+## v0.2.0-beta.4: Unified API Surface Explorer
+
+The `feat/unified-api-surface` feature branch builds on beta.3 with a visually organized, Burp-native **API Surface** tab.
+
+- **Endpoint-aware reconciliation:** server-declared GraphQL root fields are compared against root selections in real, captured GraphQL request documents. Root type names are taken from the server's introspection results rather than assumed to be `Query` or `Mutation`.
+- **Evidence terminology:** `Declared + requested`, `Declared only`, `Requested only`, or `GraphQL meta-field`. None of these proves execution, successful access or authorization.
+- **Burp-native workspace:** prominent Declared/Requested/Matched/Schema Types metric cards; searchable root and type explorer; status filters; field detail panel; resizable panes; structural JSON export.
+- **Schema history:** keep the latest and immediately preceding successful introspection snapshot for each mode/endpoint; compare additions and removals; suppress removal claims if a bounded response was truncated. Up to 64 endpoint histories, in memory.
+- **Cleaner traffic:** the extension recognizes its own explicitly initiated introspection using a short-lived expected-query fingerprint and Burp's `EXTENSIONS` source. Those observations are hidden in the normal operation tree by default, with a `Show GQLens recon` checkbox to view them. Matching manually sent Repeater requests are not relabeled.
+- **Query preview:** see the full GraphQL introspection document before you confirm the single, unauthenticated in-scope request.
+- **Privacy:** retain structural schema metadata only. No response objects, error messages, cookies, credentials or captured raw HTTP messages are saved. Clearing GQLens also clears in-memory schema snapshots.
+
+**Matching limitation:** Observed root selections can be linked to their declared root type; nested field paths are **not** matched to arbitrary type names without schema-aware traversal, because name-only matching would create false evidence.
+
+**Testing:** Maven CI exercises schema/traffic correlation, unconventional root type names, implicit meta-fields, extension attribution, snapshot differences and Swing composition. Interactive Burp Community verification of the new layout, filters and clear behavior is still required before a stable merge.
+
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.3 prerelease** and download **GQLens-0.2.0-beta.3.jar** from **Assets** (not the source archives).
+2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.4 prerelease** and download **GQLens-0.2.0-beta.4.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
@@ -69,7 +85,7 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.3.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.4.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 

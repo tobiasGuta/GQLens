@@ -25,10 +25,11 @@ class GqlensPanelTest {
         store.recordResponse(context, 200, listOf(ResponseAnalyzer.Shape.DATA))
         SwingUtilities.invokeAndWait {
             val panel = GqlensPanel(store)
-            val tabs = allComponents(panel).filterIsInstance<JTabbedPane>().single()
-            assertEquals(listOf("Fields", "Evidence history", "Response", "Recon (opt-in)"),
+            val tabs = allComponents(panel).filterIsInstance<JTabbedPane>()
+                .first { it.tabCount == 5 && it.getTitleAt(0) == "API Surface" }
+            assertEquals(listOf("API Surface", "Fields", "Evidence history", "Response", "Recon (opt-in)"),
                 (0 until tabs.tabCount).map { tabs.getTitleAt(it) })
-            assertTrue(allComponents(panel).filterIsInstance<JSplitPane>().size >= 3)
+            assertTrue(allComponents(panel).filterIsInstance<JSplitPane>().size >= 4)
             assertTrue(allComponents(panel).filterIsInstance<JTree>().size >= 2)
         }
     }
