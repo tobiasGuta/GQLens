@@ -12,9 +12,9 @@
 - Exports structural metadata as JSON. Holds data in memory, not in project storage.
 - No active enumeration, scanner integration, background connections, request modification, or Pro-only APIs.
 
-## Development branch: evidence-linked passive explorer
+## v0.2.0-beta.1: evidence-linked passive explorer
 
-The `feat/passive-evidence-explorer` branch is **unreleased**. It adds:
+The `feat/passive-evidence-explorer` branch contains the **v0.2.0-beta.1 prerelease** for manual testing. It adds:
 
 - Selected-operation awareness for multi-operation GraphQL documents, including GET, JSON POST, and URL-encoded POST. Unselected operations are not recorded as if executed; ambiguous multi-operation requests are omitted.
 - Passive response classification (`DATA`, `ERRORS`, `PARTIAL_DATA`, `NULL_DATA`, etc.) and HTTP status, without saving returned field values or GraphQL error messages.
@@ -25,16 +25,16 @@ The `feat/passive-evidence-explorer` branch is **unreleased**. It adds:
 
 These are evidence **observations**, not security findings or proof that requested fields executed successfully. GraphQL field paths may include selections excluded at runtime by directives or type conditions. HTTP 200 is not equivalent to GraphQL operation success.
 
-**Development verification:** Unit tests cover operation selection, response shapes, matched batch responses, mismatched message IDs, and capacity bounds. Burp Community desktop loading, live correlation, and Repeater handoff still require manual validation before release.
+**Beta verification:** Automated tests cover operation selection, response shapes, matched batch responses, mismatched message IDs, and capacity bounds. Burp Community desktop loading, live correlation, and Repeater handoff still require hands-on validation before a stable release.
 
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. Under **v0.1.0**, download the attached **GQLens-0.1.0.jar** directly from **Assets** (not the automatically generated source archives).
+2. For the original release, use **v0.1.0**. To test the new evidence explorer, select the **v0.2.0-beta.1 prerelease** and download **GQLens-0.2.0-beta.1.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
-Releases are intended as the stable, persistent download location. For development builds, GitHub Actions also provides short-lived build artifacts.
+GitHub Releases are the persistent download location for stable and beta artifacts. GitHub Actions build artifacts expire. Check the published SHA-256 checksum when verifying a downloaded JAR.
 
 ## Build locally
 
@@ -42,15 +42,15 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file is at **target/GQLens-0.1.0.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.1.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 
-**Passive mode only** in v0.1.0: GQLens does not initiate HTTP requests. Captures are limited to requests that Burp marks in scope, and can be switched off. It ignores oversized HTTP bodies, limits GraphQL parse depth and retained field count, and holds at most 2,000 distinct operation fingerprints in memory. Every entry represents observation, not proof that any field is vulnerable or even part of a complete schema.
+**Passive collection only**: GQLens does not initiate HTTP requests. Captures are limited to requests that Burp marks in scope, and can be switched off. It ignores oversized HTTP bodies, limits GraphQL parse depth and retained field count, and holds at most 2,000 distinct operation fingerprints in memory. Every entry represents observation, not proof that any field is vulnerable or even part of a complete schema.
 
 The extension does **not** save raw request/response bodies, headers, cookies, variable values or query documents. It keeps endpoint origins/paths, operation names/kinds, observed field paths, query hash prefixes and counters. Endpoint paths and GraphQL names might still be sensitive; inspect exported data before sharing bug bounty evidence. Clear resets the in-memory inventory. Burp may separately retain HTTP history independently of GQLens.
 
-**Limitations:** captures traffic observed after the extension was loaded, not existing history; recognizes common HTTP transport formats, not multipart uploads, GraphQL-over-WebSocket or custom protocols; does not perform introspection, brute-force fields, or build queries for Repeater yet.
+**Limitations:** captures traffic observed after the extension was loaded, not existing history; recognizes common HTTP transport formats, not multipart uploads, GraphQL-over-WebSocket or custom protocols; does not perform introspection or brute-force fields. Repeater handoff uses previously captured Proxy traffic only, never generated queries; it does not automatically send requests.
 
 ## Why this design?
 
