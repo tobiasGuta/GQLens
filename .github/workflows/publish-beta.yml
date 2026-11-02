@@ -1,4 +1,4 @@
-name: Publish GQLens v0.2.0-beta.1 from feature branch
+name: Publish GQLens feature beta
 
 on:
   push:
@@ -6,23 +6,21 @@ on:
       - feat/passive-evidence-explorer
     paths:
       - .github/workflows/publish-beta.yml
+      - pom.xml
 
 permissions:
   contents: write
 
 concurrency:
-  group: gqlens-v0.2.0-beta.1
+  group: gqlens-feature-beta-release
   cancel-in-progress: false
 
 jobs:
   publish-beta:
     if: github.repository == 'tobiasGuta/GQLens' && github.ref == 'refs/heads/feat/passive-evidence-explorer'
     runs-on: ubuntu-latest
-    env:
-      VERSION: 0.2.0-beta.1
-      TAG: v0.2.0-beta.1
     steps:
-      - name: Check out feature branch commit
+      - name: Check out exact feature branch commit
         uses: actions/checkout@v4
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -30,25 +28,31 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - name: Verify unique version, tag and release
+      - name: Validate prerelease version and verify unpublished tag
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ACTUAL="$(mvn --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
-          test "$ACTUAL" = "$VERSION" || { echo 'Wrong Maven version for this beta release' >&2; exit 1; }
+          VERSION="$(mvn --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            echo 'Expected a numeric beta version; refusing to publish' >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
           if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
-            echo 'Refusing to overwrite an existing tag' >&2
+            echo 'Refusing to reuse an existing tag' >&2
             exit 1
           fi
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo 'Refusing to overwrite an existing release' >&2
+            echo 'Refusing to overwrite a GitHub release' >&2
             exit 1
           fi
-      - name: Build and test exact prerelease
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Compile and test exactly the tagged code
         run: mvn --batch-mode --no-transfer-progress clean verify
-      - name: Verify installable JAR and write SHA-256 file
+      - name: Verify installable Burp JAR and checksum
         shell: bash
         run: |
           set -euo pipefail
@@ -60,26 +64,24 @@ jobs:
             exit 1
           fi
           (cd target && sha256sum "GQLens-${VERSION}.jar" > "GQLens-${VERSION}.jar.sha256")
-      - name: Publish immutable-by-policy beta tag and release
+      - name: Publish prerelease from feature commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cat > RELEASE_NOTES.md <<'NOTES'
-          GQLens v0.2.0-beta.1 — passive evidence explorer (early testing prerelease).
+          GQLens beta — passive GraphQL investigation workspace for Burp Suite Community.
 
-          Download **GQLens-0.2.0-beta.1.jar** below and load in Burp Suite Community via Extensions > Installed > Add > Java.
+          - Endpoint-first GraphQL explorer, nested fields, and Fields/Evidence history/Response tabs.
+          - Per-request, bounded metadata-only evidence timeline with individual HTTP outcomes.
+          - Resizable split views, visible-column customization, dynamic filters, and Burp theme integration.
+          - Explicit Repeater handoff for matching Proxy-history requests, never automatic sending.
+          - Repeater captures expose a copyable session-local reference; Montoya does not support jumping to an existing Repeater tab by ID.
+          - Regression tests, metadata-only exports, and bounded storage.
 
-          - Records only the selected operation from multi-operation GraphQL documents.
-          - Adds passive request/response correlation, HTTP status, and structural result classification.
-          - Displays first/last seen, Burp source tool, session-local message IDs and evidence counts.
-          - Offers manual Repeater handoff for matching original Proxy history entries, without automatically sending.
-          - Includes regression tests and metadata-only privacy safeguards.
-
-          **Beta limitations:** Manual Burp desktop loading, live correlation, and history ID ↔ Repeater handoff are not yet verified. GQLens captures new in-scope traffic only and does not scan, issue probes, or infer vulnerability from response shape.
-
-          The attached SHA-256 file covers the exact released JAR.
+          **Testing prerelease:** Automated tests and packaging passed, but interactive Burp Community testing of the new UI and Proxy history-ID handoff is still required.
+          Verify the downloaded JAR with the accompanying SHA-256 checksum asset.
           NOTES
           gh release create "$TAG" \
             "target/GQLens-${VERSION}.jar" \
