@@ -63,7 +63,7 @@ class SchemaInvestigatorTest {
             assertEquals("organization", fieldNode.toString())
             tree.selectionPath = TreePath(fieldNode.path)
             val viewer = all(panel).filterIsInstance<CodePreviewPanel>().single()
-            assertTrue(viewer.currentCode().contains("organization(slug: \\$slug)"))
+            assertTrue(viewer.currentCode().contains("organization(slug: \$slug)"))
             assertTrue(viewer.currentCode().contains("\n    __typename\n"))
             val scroll = all(viewer).filterIsInstance<JScrollPane>().single()
             val gutter = scroll.rowHeader.view as JTextArea
