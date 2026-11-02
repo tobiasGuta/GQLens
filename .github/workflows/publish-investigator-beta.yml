@@ -1,0 +1,90 @@
+name: Publish GraphQL schema investigator beta
+
+on:
+  push:
+    branches:
+      - feat/schema-investigator-beta6
+    paths:
+      - .github/workflows/publish-investigator-beta.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gqlens-schema-investigator-beta
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'tobiasGuta/GQLens' && github.ref == 'refs/heads/feat/schema-investigator-beta6'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact feature commit
+        uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Check Maven version and exclusive beta tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(mvn -q --batch-mode --no-transfer-progress help:evaluate -Dexpression=project.version -DforceStdout)"
+          test "$VERSION" = '0.2.0-beta.6' || { echo 'Expected beta.6 version' >&2; exit 1; }
+          TAG="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo 'Refusing to overwrite existing release tag' >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite published release' >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Build and test JAR
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Validate Burp entrypoint and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="target/GQLens-${VERSION}.jar"
+          test -s "$JAR"
+          jar tf "$JAR" | grep -Fx 'burp/BurpExtender.class'
+          if jar tf "$JAR" | grep -q '^burp/api/montoya/'; then
+            echo 'Montoya API must not be bundled' >&2
+            exit 1
+          fi
+          (cd target && sha256sum "GQLens-${VERSION}.jar" > "GQLens-${VERSION}.jar.sha256")
+      - name: Publish beta JAR and checksum without replacing older tags
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'NOTES'
+          GQLens v0.2.0-beta.6: opt-in controlled GraphQL schema reconnaissance and improved evidence explorer.
+
+          - Compact type-kind navigation and short schema field names with full signature tooltips.
+          - Structured field inspector with return type, required arguments, and evidence status.
+          - Read-only multiline GraphQL/JSON preview with syntax emphasis and line numbers.
+          - Separate Copy GraphQL / Copy JSON actions. JSON variables map is intentionally empty.
+          - Fail-closed query generation on missing, malformed, capped or truncated introspection arguments.
+          - Existing passive evidence, one-request opt-in recon and schema correlation remain unchanged.
+
+          **Development prerelease.** Automated tests passed. Manual Burp Community validation of schema grouping and rendered previews remains necessary.
+          Verify the downloaded JAR using the attached SHA-256 checksum.
+          NOTES
+          gh release create "$TAG" \
+            "target/GQLens-${VERSION}.jar" \
+            "target/GQLens-${VERSION}.jar.sha256" \
+            --target "$GITHUB_SHA" --title "GQLens $TAG" \
+            --notes-file RELEASE_NOTES.md --prerelease
+      - name: Verify new prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$TAG" --json tagName,isPrerelease,assets,url
