@@ -92,7 +92,9 @@ class SchemaDetailsPanel : JPanel(BorderLayout(8, 8)) {
                 "Requested but not matched to the available, potentially partial schema."
             SurfaceStatus.META_FIELD_REQUESTED ->
                 "GraphQL meta-fields are implicit and need not appear in the schema field list."
-        } + " No status implies successful execution, access, or authorization."
+        } + " No status implies successful execution, access, or authorization." +
+            (if (field.signature != null && !field.signature.complete)
+                " Incomplete argument metadata: query generation disabled." else "")
     }
 
     fun showType(type: SurfaceType) {
@@ -112,7 +114,8 @@ class SchemaDetailsPanel : JPanel(BorderLayout(8, 8)) {
         count.text = "Captured requests: not inferred"
         origin.text = "Source: introspection"
         setArguments(signature)
-        note.text = "This does not prove the member is accessible or has executed."
+        note.text = "This does not prove the member is accessible or has executed." +
+            (if (signature != null && !signature.complete) " Signature metadata is incomplete." else "")
     }
 
     private fun setArguments(signature: SchemaRecon.FieldSignature?) {
@@ -120,9 +123,6 @@ class SchemaDetailsPanel : JPanel(BorderLayout(8, 8)) {
         signature?.args?.forEach { arg ->
             tableModel.addRow(arrayOf(arg.name, arg.type.display,
                 if (arg.required) "Required" else "Optional / default"))
-        }
-        if (signature != null && !signature.complete) {
-            note.text += " Signature metadata is incomplete; generation is disabled."
         }
     }
 }
