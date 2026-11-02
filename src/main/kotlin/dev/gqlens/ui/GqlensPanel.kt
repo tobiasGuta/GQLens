@@ -107,7 +107,7 @@ class GqlensPanel(
     private val tabbed = JTabbedPane()
     private val research = InvestigationWorkspace()
     private val bountyPanel = BountyWorkspacePanel(
-        research, store, surfaceStore, importProxyHistory,
+        research, store, surfaceStore, { limit -> importProxyHistory(limit).also { scheduleRefresh() } },
         { event -> jumpToEvidence(event) }
     )
     private val surfacePanel = ApiSurfacePanel(
