@@ -73,7 +73,9 @@ object SchemaRecon {
         val required: Boolean get() = type.display.endsWith("!") && !hasDefault
     }
     data class FieldSignature(
-        val name: String, val type: TypeSignature?, val args: List<ArgumentSignature> = emptyList()
+        val name: String, val type: TypeSignature?, val args: List<ArgumentSignature> = emptyList(),
+        /** True only when the server returned a complete, validated argument list and return type. */
+        val complete: Boolean = true
     ) {
         val display: String get() = name +
             (if (args.isNotEmpty()) args.joinToString(", ", "(", ")") {
@@ -145,23 +147,39 @@ object SchemaRecon {
 
         fun signature(entry: JsonNode): FieldSignature? {
             val name = entry.path("name").takeIf { it.isTextual }?.asText() ?: return null
-            val args = ArrayList<ArgumentSignature>()
+            val type = typeOf(entry.path("type"))
             val allArgs = entry.path("args")
+            // Missing/NULL args are NOT equivalent to an empty list. Older or
+            // partial introspection responses could omit a required argument.
+            var complete = type != null && allArgs.isArray
+            val args = ArrayList<ArgumentSignature>()
             if (allArgs.isArray) {
                 for (arg in allArgs) {
                     if (args.size >= 32 || arguments >= 8192) {
                         truncated = true
+                        complete = false
                         break
                     }
-                    val argName = arg.path("name").takeIf { it.isTextual }?.asText() ?: continue
-                    if (!argName.matches(Regex("[_A-Za-z][_0-9A-Za-z]{0,127}"))) continue
-                    val argType = typeOf(arg.path("type")) ?: continue
-                    args.add(ArgumentSignature(argName, argType, !arg.path("defaultValue").isNull &&
-                        !arg.path("defaultValue").isMissingNode))
+                    val argName = arg.path("name").takeIf { it.isTextual }?.asText()
+                    if (argName == null ||
+                        !argName.matches(Regex("[_A-Za-z][_0-9A-Za-z]{0,127}"))) {
+                        complete = false
+                        continue
+                    }
+                    val argType = typeOf(arg.path("type"))
+                    if (argType == null) {
+                        complete = false
+                        continue
+                    }
+                    // __InputValue.defaultValue is nullable. Missing this property
+                    // means we cannot determine whether a non-null input is required.
+                    if (!arg.has("defaultValue")) complete = false
+                    args.add(ArgumentSignature(argName, argType,
+                        arg.has("defaultValue") && !arg.path("defaultValue").isNull))
                     arguments++
                 }
             }
-            return FieldSignature(name, typeOf(entry.path("type")), args)
+            return FieldSignature(name, type, args, complete)
         }
 
         fun gather(node: JsonNode): List<String> {
