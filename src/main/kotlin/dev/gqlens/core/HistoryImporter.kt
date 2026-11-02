@@ -41,7 +41,7 @@ class HistoryImporter(private val store: ObservationStore) {
         var oversized = 0
         var rejected = 0
         for (entry in entries) {
-            if (inspected >= maxEntries) break
+            if (inspected >= maxEntries || Thread.currentThread().isInterrupted) break
             inspected++
             if (!entry.inScope) { scope++; continue }
             if (store.hasProxyMessage(entry.proxyId)) { duplicates++; continue }
