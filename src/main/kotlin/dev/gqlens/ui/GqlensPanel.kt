@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.ObservationRow
 import dev.gqlens.core.ObservationStore
+import dev.gqlens.core.SchemaRecon
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.GridLayout
@@ -11,6 +12,7 @@ import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.net.URI
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.prefs.Preferences
@@ -46,7 +48,9 @@ import javax.swing.tree.TreePath
  */
 class GqlensPanel(
     private val store: ObservationStore,
-    private val openEvidence: (EvidenceEvent) -> String = { "Opening captured evidence is unavailable." }
+    private val openEvidence: (EvidenceEvent) -> String = { "Opening captured evidence is unavailable." },
+    private val runRecon: (String, SchemaRecon.Mode) -> SchemaRecon.Result =
+        { _, mode -> SchemaRecon.Result(mode, null, "RECON_NOT_CONFIGURED") }
 ) : JPanel(BorderLayout()) {
     private data class OperationNode(val row: ObservationRow) {
         override fun toString(): String =
@@ -67,7 +71,18 @@ class GqlensPanel(
     private val root = DefaultMutableTreeNode("Endpoints")
     private val operationTree = JTree(DefaultTreeModel(root))
     private val fieldTree = JTree(DefaultTreeModel(DefaultMutableTreeNode("Requested fields")))
-    private val summary = JTextArea(7, 50)
+    private val summary = JTextArea(6, 50)
+    private val requestsMetric = JLabel("Requests  0")
+    private val responsesMetric = JLabel("Responses  0")
+    private val statusMetric = JLabel("Last result  -")
+    private val overview = JPanel(BorderLayout()).apply {
+        val metrics = JPanel(GridLayout(1, 3, 8, 0))
+        metrics.add(requestsMetric)
+        metrics.add(responsesMetric)
+        metrics.add(statusMetric)
+        add(metrics, BorderLayout.NORTH)
+        add(JScrollPane(summary), BorderLayout.CENTER)
+    }
     private val responseDetail = JTextArea(12, 50)
     private val evidenceDetail = JTextArea(3, 50)
     private val evidenceModel = object : DefaultTableModel(
@@ -80,6 +95,7 @@ class GqlensPanel(
     private val openButton = JButton("Open selected Proxy capture in Repeater")
     private val copyButton = JButton("Copy evidence reference")
     private val tabbed = JTabbedPane()
+    private val reconPanel = ReconPanel({ selectedOperation?.endpoint }, runRecon)
     private val workspace: JSplitPane
     private val detailsSplit: JSplitPane
     private var selectedOperation: ObservationRow? = null
@@ -195,8 +211,9 @@ class GqlensPanel(
         tabbed.addTab("Fields", JScrollPane(fieldTree))
         tabbed.addTab("Evidence history", evidencePanel)
         tabbed.addTab("Response", JScrollPane(responseDetail))
+        tabbed.addTab("Recon (opt-in)", reconPanel)
 
-        detailsSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(summary), tabbed)
+        detailsSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT, overview, tabbed)
         detailsSplit.resizeWeight = 0.26
         detailsSplit.dividerLocation = prefs.getInt("detailDivider", 190)
         detailsSplit.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY) {
@@ -214,7 +231,7 @@ class GqlensPanel(
 
         val footer = JPanel(GridLayout(2, 1))
         footer.add(notice)
-        footer.add(JLabel("PASSIVE ONLY  |  Burp target scope  |  Metadata only  |  Repeater handoff never auto-sends"))
+        footer.add(JLabel("Passive by default | Recon requires confirmation, scope and 1 request | Never auto-sends Repeater"))
         add(footer, BorderLayout.SOUTH)
 
         search.document.addDocumentListener(object : DocumentListener {
@@ -283,14 +300,24 @@ class GqlensPanel(
         }
         root.removeAllChildren()
         var nextPath: TreePath? = null
-        for ((endpoint, rows) in filtered.groupBy { it.endpoint }.toSortedMap()) {
-            val endpointNode = DefaultMutableTreeNode(endpoint)
-            root.add(endpointNode)
-            for (row in rows.sortedWith(compareBy({ it.kind }, { it.operation }, { it.fingerprint }))) {
-                val node = DefaultMutableTreeNode(OperationNode(row))
-                endpointNode.add(node)
-                if (listOf(row.endpoint, row.kind, row.operation, row.fingerprint) == selectionKey) {
-                    nextPath = TreePath(node.path)
+        // Host > path > observed operation. Labels are derived from actual endpoints,
+        // never from guesses about hostnames or conventional /graphql locations.
+        for ((host, hostRows) in filtered.groupBy { row ->
+            try { URI(row.endpoint).authority ?: row.endpoint } catch (_: Exception) { row.endpoint }
+        }.toSortedMap()) {
+            val hostNode = DefaultMutableTreeNode(host)
+            root.add(hostNode)
+            for ((endpoint, rows) in hostRows.groupBy { it.endpoint }.toSortedMap()) {
+                val pathLabel = try { URI(endpoint).rawPath?.ifEmpty { "/" } ?: "/" }
+                    catch (_: Exception) { endpoint }
+                val endpointNode = DefaultMutableTreeNode(pathLabel)
+                hostNode.add(endpointNode)
+                for (row in rows.sortedWith(compareBy({ it.kind }, { it.operation }, { it.fingerprint }))) {
+                    val node = DefaultMutableTreeNode(OperationNode(row))
+                    endpointNode.add(node)
+                    if (listOf(row.endpoint, row.kind, row.operation, row.fingerprint) == selectionKey) {
+                        nextPath = TreePath(node.path)
+                    }
                 }
             }
         }
@@ -299,12 +326,10 @@ class GqlensPanel(
         if (nextPath != null) {
             operationTree.selectionPath = nextPath
         } else if (selectionKey == null && root.childCount > 0) {
-            val endpoint = root.getChildAt(0) as DefaultMutableTreeNode
-            if (endpoint.childCount > 0) {
-                operationTree.selectionPath = TreePath(
-                    (endpoint.getChildAt(0) as DefaultMutableTreeNode).path
-                )
-            }
+            val host = root.getChildAt(0) as DefaultMutableTreeNode
+            val endpoint = host.getChildAt(0) as? DefaultMutableTreeNode
+            val operation = endpoint?.getChildAt(0) as? DefaultMutableTreeNode
+            if (operation != null) operationTree.selectionPath = TreePath(operation.path)
         } else {
             selectedOperation = null
             selectedEvidence = null
@@ -326,6 +351,10 @@ class GqlensPanel(
                 it.operation == row.operation && it.fingerprint == row.fingerprint
         } ?: row
         selectedOperation = latest
+        reconPanel.setEndpoint(latest.endpoint)
+        requestsMetric.text = "Requests  " + latest.seen
+        responsesMetric.text = "Responses  " + latest.responsesSeen
+        statusMetric.text = "Last result  " + (latest.lastHttpStatus ?: "-") + " / " + latest.lastResponseShape
         summary.text = buildString {
             appendLine("Endpoint: " + latest.endpoint)
             appendLine("Requested: " + latest.kind + "  " + latest.operation)
@@ -415,6 +444,16 @@ class GqlensPanel(
             appendLine("Aggregate last result: " + row.lastResponseShape)
             appendLine("Matched responses: " + row.responsesSeen + " of " + row.seen + " requests")
             appendLine()
+            appendLine("Recent HTTP statuses:")
+            val statusCounts = visibleEvidence.groupingBy { it.httpStatus?.toString() ?: "unobserved" }.eachCount()
+            for ((status, count) in statusCounts.toSortedMap()) appendLine("  $status: $count")
+            appendLine("Recent GraphQL result categories:")
+            val resultCounts = visibleEvidence.groupingBy { it.responseShape }.eachCount()
+            for ((category, count) in resultCounts.toSortedMap()) appendLine("  $category: $count")
+            if (row.seen > visibleEvidence.size) {
+                appendLine("Showing the most recent ${visibleEvidence.size} evidence items; not all historical captures.")
+            }
+            appendLine()
             if (event != null) {
                 appendLine("Selected capture #" + event.id + ": " + event.tool +
                     " message " + event.messageId)
@@ -488,6 +527,10 @@ class GqlensPanel(
 
     private fun showEmptyDetails() {
         summary.text = "Browse an in-scope GraphQL API to collect passive evidence."
+        requestsMetric.text = "Requests  0"
+        responsesMetric.text = "Responses  0"
+        statusMetric.text = "Last result  -"
+        reconPanel.setEndpoint(null)
         fieldTree.model = DefaultTreeModel(DefaultMutableTreeNode("No selected operation"))
         evidenceModel.rowCount = 0
         visibleEvidence = emptyList()

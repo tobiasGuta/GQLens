@@ -1,0 +1,90 @@
+name: Publish controlled GraphQL recon beta
+
+on:
+  push:
+    branches:
+      - feat/controlled-graphql-recon-workspace
+    paths:
+      - .github/workflows/publish-recon-beta.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gqlens-controlled-recon-beta
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'tobiasGuta/GQLens' && github.ref == 'refs/heads/feat/controlled-graphql-recon-workspace'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact feature commit
+        uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Check Maven version and exclusive beta tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(mvn -q --batch-mode --no-transfer-progress help:evaluate -Dexpression=project.version -DforceStdout)"
+          test "$VERSION" = '0.2.0-beta.3' || { echo 'Expected beta.3 version' >&2; exit 1; }
+          TAG="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo 'Refusing to overwrite existing release tag' >&2
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite published release' >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Build and test JAR
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Validate Burp entrypoint and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR="target/GQLens-${VERSION}.jar"
+          test -s "$JAR"
+          jar tf "$JAR" | grep -Fx 'burp/BurpExtender.class'
+          if jar tf "$JAR" | grep -q '^burp/api/montoya/'; then
+            echo 'Montoya API must not be bundled' >&2
+            exit 1
+          fi
+          (cd target && sha256sum "GQLens-${VERSION}.jar" > "GQLens-${VERSION}.jar.sha256")
+      - name: Publish beta JAR and checksum without replacing older tags
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'NOTES'
+          GQLens v0.2.0-beta.3: opt-in controlled GraphQL schema reconnaissance and improved evidence explorer.
+
+          - Host > endpoint path > operation navigation with compact overview metrics.
+          - Recent response-outcome distributions for repeated evidence.
+          - Recon tab: root-operation or schema type/field introspection, driven by standard GraphQL reflection, not guessed field names.
+          - Exactly one unauthenticated POST per explicit confirmation, with current Burp Target-scope check.
+          - Redirects disabled, 10-second response timeout, no auto-retry, bounded 512 KiB response and limited in-memory schema structures.
+          - Never executes discovered mutations or brute-forces fields.
+
+          **Development prerelease.** Automated tests passed. Manual testing of the new active recon path inside Burp Community, with an explicitly authorized test target, remains necessary.
+          Verify the downloaded JAR using the attached SHA-256 checksum.
+          NOTES
+          gh release create "$TAG" \
+            "target/GQLens-${VERSION}.jar" \
+            "target/GQLens-${VERSION}.jar.sha256" \
+            --target "$GITHUB_SHA" --title "GQLens $TAG" \
+            --notes-file RELEASE_NOTES.md --prerelease
+      - name: Verify new prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$TAG" --json tagName,isPrerelease,assets,url
