@@ -12,9 +12,9 @@
 - Exports structural metadata as JSON. Holds data in memory, not in project storage.
 - No active enumeration, scanner integration, background connections, request modification, or Pro-only APIs.
 
-## v0.2.0-beta.1: evidence-linked passive explorer
+## v0.2.0-beta.2: GraphQL investigation workspace
 
-The `feat/passive-evidence-explorer` branch contains the **v0.2.0-beta.1 prerelease** for manual testing. It adds:
+The `feat/passive-evidence-explorer` branch contains the **v0.2.0-beta.2 prerelease** for manual testing. It includes:
 
 - Selected-operation awareness for multi-operation GraphQL documents, including GET, JSON POST, and URL-encoded POST. Unselected operations are not recorded as if executed; ambiguous multi-operation requests are omitted.
 - Passive response classification (`DATA`, `ERRORS`, `PARTIAL_DATA`, `NULL_DATA`, etc.) and HTTP status, without saving returned field values or GraphQL error messages.
@@ -25,12 +25,23 @@ The `feat/passive-evidence-explorer` branch contains the **v0.2.0-beta.1 prerele
 
 These are evidence **observations**, not security findings or proof that requested fields executed successfully. GraphQL field paths may include selections excluded at runtime by directives or type conditions. HTTP 200 is not equivalent to GraphQL operation success.
 
-**Beta verification:** Automated tests cover operation selection, response shapes, matched batch responses, mismatched message IDs, and capacity bounds. Burp Community desktop loading, live correlation, and Repeater handoff still require hands-on validation before a stable release.
+### New in beta.2
+
+- Endpoint-first GraphQL explorer tree, nested field browser, and separate **Fields / Evidence history / Response** tabs.
+- Metadata-only per-request evidence timeline with HTTP outcomes retained individually (up to 3,000 recent captures, independent of the 2,000-operation inventory bound). Older records are evicted and counted.
+- Resizable split panels, column visibility controls, a reset-layout action, dynamic type/tool/result filters, and Burp's native theme application.
+- Select any evidence event, including Repeater observations, to inspect/copy its session-local reference. For **Proxy** captures only, a manual button resolves the original matching history request and opens it in a new Repeater tab without sending it.
+- Export format v2 adds bounded evidence metadata to operation metadata. Exports may include sensitive endpoint paths; review before sharing.
+- Coalesced Swing refreshes to reduce UI churn during bursts of captured traffic.
+
+**Important API limitation:** Montoya does not provide a supported way to jump to an existing Repeater tab by captured message ID. Repeater evidence can be inspected and its reference copied, but cannot be reopened automatically from that ID. No raw messages are retained by GQLens to work around this.
+
+**Beta verification:** Automated tests cover operation selection, response classification/correlation, evidence retention and UI component creation. Live desktop behavior and Proxy-history message-ID resolution still need hands-on validation before a stable release.
 
 ## Download and install
 
 1. Open [GQLens Releases](https://github.com/tobiasGuta/GQLens/releases).
-2. For the original release, use **v0.1.0**. To test the new evidence explorer, select the **v0.2.0-beta.1 prerelease** and download **GQLens-0.2.0-beta.1.jar** from **Assets** (not the source archives).
+2. For the original release, use **v0.1.0**. To test the latest workspace, select the **v0.2.0-beta.2 prerelease** and download **GQLens-0.2.0-beta.2.jar** from **Assets** (not the source archives).
 3. In Burp Suite Community Edition, open **Extensions > Installed > Add > Java**, select the downloaded JAR, and click Next.
 4. Find the **GQLens** tab, set Burp Target scope for your authorized program, and browse or manually test as normal.
 
@@ -42,7 +53,7 @@ Requirements: JDK 21 and Maven 3.9+. Run:
 
     mvn clean verify
 
-The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.1.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
+The installable dependency-bundled file for this branch is at **target/GQLens-0.2.0-beta.2.jar**. The Montoya API itself is *not* bundled because Burp supplies it at runtime. Other dependencies are bundled by the Maven Shade plugin.
 
 ## Safety & privacy
 
