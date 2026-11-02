@@ -5,6 +5,7 @@ import dev.gqlens.core.EvidenceEvent
 import dev.gqlens.core.ObservationRow
 import dev.gqlens.core.ObservationStore
 import dev.gqlens.core.SchemaRecon
+import dev.gqlens.core.ApiSurfaceStore
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.GridLayout
@@ -48,6 +49,7 @@ import javax.swing.tree.TreePath
  */
 class GqlensPanel(
     private val store: ObservationStore,
+    private val surfaceStore: ApiSurfaceStore = ApiSurfaceStore(),
     private val openEvidence: (EvidenceEvent) -> String = { "Opening captured evidence is unavailable." },
     private val runRecon: (String, SchemaRecon.Mode) -> SchemaRecon.Result =
         { _, mode -> SchemaRecon.Result(mode, null, "RECON_NOT_CONFIGURED") }
@@ -67,6 +69,9 @@ class GqlensPanel(
     private var updatingFilters = false
 
     private val countLabel = JLabel("No observations")
+    private val showSelfRecon = JCheckBox("Show GQLens recon", false).apply {
+        toolTipText = "Keep extension-generated introspection separate from application traffic."
+    }
     private val notice = JLabel("Read-only capture; evidence references are local to this Burp session.")
     private val root = DefaultMutableTreeNode("Endpoints")
     private val operationTree = JTree(DefaultTreeModel(root))
@@ -95,7 +100,14 @@ class GqlensPanel(
     private val openButton = JButton("Open selected Proxy capture in Repeater")
     private val copyButton = JButton("Copy evidence reference")
     private val tabbed = JTabbedPane()
-    private val reconPanel = ReconPanel({ selectedOperation?.endpoint }, runRecon)
+    private val surfacePanel = ApiSurfacePanel(surfaceStore) { store.snapshot() }
+    private val reconPanel = ReconPanel(
+        { selectedOperation?.endpoint }, runRecon,
+        { endpoint, result ->
+            surfaceStore.record(endpoint, result)
+            surfacePanel.refresh()
+        }
+    )
     private val workspace: JSplitPane
     private val detailsSplit: JSplitPane
     private var selectedOperation: ObservationRow? = null
@@ -114,6 +126,8 @@ class GqlensPanel(
         val captureCheck = JCheckBox("Capture new in-scope requests", true)
         captureCheck.addActionListener { capture.set(captureCheck.isSelected) }
         filters.add(captureCheck)
+        filters.add(showSelfRecon)
+        showSelfRecon.addActionListener { refresh() }
         filters.add(JLabel("Search:"))
         filters.add(search)
         filters.add(JLabel("Type:"))
@@ -208,6 +222,7 @@ class GqlensPanel(
         }
         evidencePanel.add(evidenceSplit, BorderLayout.CENTER)
 
+        tabbed.addTab("API Surface", surfacePanel)
         tabbed.addTab("Fields", JScrollPane(fieldTree))
         tabbed.addTab("Evidence history", evidencePanel)
         tabbed.addTab("Response", JScrollPane(responseDetail))
@@ -231,7 +246,7 @@ class GqlensPanel(
 
         val footer = JPanel(GridLayout(2, 1))
         footer.add(notice)
-        footer.add(JLabel("Passive by default | Recon requires confirmation, scope and 1 request | Never auto-sends Repeater"))
+        footer.add(JLabel("Passive by default | Recon is opt-in, in-scope and one request per confirmation | No auto-send"))
         add(footer, BorderLayout.SOUTH)
 
         search.document.addDocumentListener(object : DocumentListener {
@@ -285,6 +300,7 @@ class GqlensPanel(
         val tool = toolFilter.selectedItem as? String ?: "All tools"
         val result = resultFilter.selectedItem as? String ?: "All results"
         val filtered = snapshot.filter { row ->
+            (showSelfRecon.isSelected || row.regularSeen > 0) &&
             (kind == "All types" || row.kind == kind) &&
                 (tool == "All tools" || row.lastTool == tool) &&
                 (result == "All results" || row.lastResponseShape == result) &&
@@ -293,8 +309,8 @@ class GqlensPanel(
                     row.operation.contains(needle, true) ||
                     row.fieldPaths.any { it.contains(needle, true) })
         }
-        countLabel.text = snapshot.size.toString() + " operations / " + filtered.size +
-            " shown / " + store.rejectedCount() + " rejected"
+        countLabel.text = filtered.size.toString() + " visible / " +
+            snapshot.size + " total operations / " + store.rejectedCount() + " rejected"
         val selectionKey = selectedOperation?.let {
             listOf(it.endpoint, it.kind, it.operation, it.fingerprint)
         }
@@ -340,6 +356,7 @@ class GqlensPanel(
                 .userObject as OperationNode
             selectOperation(row.row)
         }
+        surfacePanel.refresh()
         notice.text = "Evidence retained: latest 3,000 captures; " +
             store.evictedEvidenceCount() + " older records evicted. Burp handles raw HTTP independently."
     }
@@ -351,6 +368,7 @@ class GqlensPanel(
                 it.operation == row.operation && it.fingerprint == row.fingerprint
         } ?: row
         selectedOperation = latest
+        surfacePanel.selectEndpoint(latest.endpoint)
         reconPanel.setEndpoint(latest.endpoint)
         requestsMetric.text = "Requests  " + latest.seen
         responsesMetric.text = "Responses  " + latest.responsesSeen
@@ -531,6 +549,7 @@ class GqlensPanel(
         responsesMetric.text = "Responses  0"
         statusMetric.text = "Last result  -"
         reconPanel.setEndpoint(null)
+        surfacePanel.selectEndpoint(null)
         fieldTree.model = DefaultTreeModel(DefaultMutableTreeNode("No selected operation"))
         evidenceModel.rowCount = 0
         visibleEvidence = emptyList()
